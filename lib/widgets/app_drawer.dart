@@ -3,12 +3,16 @@ import '../screens/projects_screen.dart';
 import '../screens/users_screen.dart';
 import '../screens/logs_screen.dart';
 import '../screens/profile_screen.dart';
+import '../screens/buckets_screen.dart';
+import '../services/auth_service.dart';
 
 class AppDrawer extends StatelessWidget {
   const AppDrawer({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final authService = AuthService();
+    
     return Drawer(
       child: Column(
         children: [
@@ -56,7 +60,7 @@ class AppDrawer extends StatelessWidget {
                   ),
                 ),
                 ListTile(
-                  leading: const Icon(Icons.dashboard),
+                  leading: const Icon(Icons.dashboard, color: Color(0xFF1976D2)),
                   title: const Text('Dashboard'),
                   onTap: () {
                     Navigator.pushReplacement(
@@ -68,31 +72,33 @@ class AppDrawer extends StatelessWidget {
                   },
                 ),
                 ListTile(
-                  leading: const Icon(Icons.people),
+                  leading: const Icon(Icons.folder, color: Color(0xFF1976D2)),
+                  title: const Text('Buckets'),
+                  onTap: () {
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const BucketsScreen(),
+                      ),
+                    );
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.person, color: Color(0xFF1976D2)),
                   title: const Text('Users'),
                   onTap: () {
-                    Navigator.pushReplacement(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const UsersScreen(),
-                      ),
-                    );
+                    Navigator.pushNamed(context, '/users');
                   },
                 ),
                 ListTile(
-                  leading: const Icon(Icons.history),
+                  leading: const Icon(Icons.history, color: Color(0xFF1976D2)),
                   title: const Text('Logs'),
                   onTap: () {
-                    Navigator.pushReplacement(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const LogsScreen(),
-                      ),
-                    );
+                    Navigator.pushNamed(context, '/logs');
                   },
                 ),
                 ListTile(
-                  leading: const Icon(Icons.person_outline),
+                  leading: const Icon(Icons.person_outline, color: Color(0xFF1976D2)),
                   title: const Text('Profile'),
                   onTap: () {
                     Navigator.pushReplacement(
@@ -118,12 +124,17 @@ class AppDrawer extends StatelessWidget {
                 'Logout',
                 style: TextStyle(color: Colors.red),
               ),
-              onTap: () {
-                // TODO: Add any logout cleanup here (clear tokens, state, etc.)
-                Navigator.of(context).pushNamedAndRemoveUntil(
-                  '/login',
-                  (Route<dynamic> route) => false,
-                );
+              onTap: () async {
+                // Log out user
+                await authService.logout();
+                
+                // Navigate to login screen
+                if (context.mounted) {
+                  Navigator.of(context).pushNamedAndRemoveUntil(
+                    '/login',
+                    (Route<dynamic> route) => false,
+                  );
+                }
               },
             ),
           ),

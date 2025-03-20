@@ -1,11 +1,18 @@
 import 'package:flutter/material.dart';
 import 'create_task_screen.dart';
+import '../services/api_service.dart';
+import '../widgets/app_header.dart';
+import 'edit_project_screen.dart';
+import '../widgets/app_drawer.dart';
+import 'project_buckets_screen.dart';
 
 class ProjectDetailsScreen extends StatefulWidget {
+  final int projectId;
   final String projectName;
 
   const ProjectDetailsScreen({
     super.key,
+    required this.projectId,
     required this.projectName,
   });
 
@@ -15,6 +22,10 @@ class ProjectDetailsScreen extends StatefulWidget {
 
 class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  final ApiService _apiService = ApiService();
+  Map<String, dynamic> _projectData = {};
+  bool _isLoading = true;
+  String _errorMessage = '';
   bool _showTaskFilter = false;
   String? _sortBy;
   String? _status;
@@ -27,6 +38,32 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Single
   void initState() {
     super.initState();
     _tabController = TabController(length: 8, vsync: this);
+    _loadProjectDetails();
+  }
+
+  Future<void> _loadProjectDetails() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = '';
+    });
+
+    try {
+      final projectData = await _apiService.getProjectById(widget.projectId);
+      if (mounted) {
+        setState(() {
+          _projectData = projectData;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading project details: $e');
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Failed to load project details: $e';
+          _isLoading = false;
+        });
+      }
+    }
   }
 
   @override
@@ -333,75 +370,310 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Single
     );
   }
 
+  Color _getStatusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'in progress':
+        return Colors.blue;
+      case 'completed':
+        return Colors.green;
+      case 'on hold':
+        return Colors.orange;
+      case 'cancelled':
+        return Colors.red;
+      case 'pending':
+        return Colors.amber;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  void _navigateToEdit() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => EditProjectScreen(
+          projectId: widget.projectId,
+          title: _projectData['name'] ?? _projectData['title'] ?? '',
+          description: _projectData['description'] ?? '',
+          location: _projectData['location'] ?? '',
+          status: _projectData['status'] ?? 'In Progress',
+        ),
+      ),
+    ).then((_) => _loadProjectDetails());
+  }
+
+  Future<void> _showDeleteConfirmation() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Project'),
+        content: const Text(
+          'Are you sure you want to delete this project? This action cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('CANCEL'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text(
+              'DELETE',
+              style: TextStyle(color: Colors.red),
+            ),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirm == true) {
+      try {
+        await _apiService.deleteProject(widget.projectId);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Project deleted successfully'),
+            ),
+          );
+          Navigator.pop(context);
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to delete project: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF1976D2),
+        backgroundColor: Colors.white,
+        elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          icon: const Icon(Icons.arrow_back, color: Colors.black),
           onPressed: () => Navigator.pop(context),
         ),
         title: Text(
-          widget.projectName,
-          style: const TextStyle(color: Colors.white),
+          _isLoading ? 'Project Details' : (_projectData['name'] ?? _projectData['title'] ?? 'Project Details'),
+          style: const TextStyle(color: Colors.black),
         ),
-        bottom: TabBar(
-          controller: _tabController,
-          isScrollable: true,
-          tabs: const [
-            Tab(
-              icon: Icon(Icons.people),
-              text: 'Project Management',
+        actions: [
+          if (!_isLoading && _errorMessage.isEmpty)
+            IconButton(
+              icon: const Icon(Icons.folder_special, color: Colors.blue),
+              tooltip: 'View Buckets',
+              onPressed: () {
+                Navigator.pushNamed(
+                  context,
+                  '/project_buckets',
+                  arguments: {
+                    'projectId': widget.projectId,
+                    'projectName': widget.projectName,
+                  },
+                );
+              },
             ),
-            Tab(
-              icon: Icon(Icons.architecture),
-              text: 'Architecture',
+          if (!_isLoading && _errorMessage.isEmpty)
+            PopupMenuButton<String>(
+              onSelected: (value) {
+                if (value == 'edit') {
+                  _navigateToEdit();
+                } else if (value == 'delete') {
+                  _showDeleteConfirmation();
+                }
+              },
+              itemBuilder: (BuildContext context) => [
+                const PopupMenuItem(
+                  value: 'edit',
+                  child: Row(
+                    children: [
+                      Icon(Icons.edit, size: 20),
+                      SizedBox(width: 8),
+                      Text('Edit Project'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'delete',
+                  child: Row(
+                    children: [
+                      Icon(Icons.delete, size: 20, color: Colors.red),
+                      SizedBox(width: 8),
+                      Text('Delete Project', style: TextStyle(color: Colors.red)),
+                    ],
+                  ),
+                ),
+              ],
             ),
-            Tab(
-              icon: Icon(Icons.engineering),
-              text: 'Civil',
-            ),
-            Tab(
-              icon: Icon(Icons.calculate),
-              text: 'Bill Of Quantities',
-            ),
-            Tab(
-              icon: Icon(Icons.electrical_services),
-              text: 'Electro-Mechanical Design',
-            ),
-            Tab(
-              icon: Icon(Icons.location_on),
-              text: 'On Site',
-            ),
-            Tab(
-              icon: Icon(Icons.people_outline),
-              text: 'Client Section',
-            ),
-            Tab(
-              icon: Icon(Icons.home_work),
-              text: 'Exterior and Interior Architecture',
-            ),
-          ],
-          labelColor: Colors.white,
-          unselectedLabelColor: Colors.white70,
-          indicatorColor: Colors.white,
-        ),
-      ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          _buildTabContent('Project Management'),
-          _buildTabContent('Architecture'),
-          _buildTabContent('Civil'),
-          _buildTabContent('Bill Of Quantities'),
-          _buildTabContent('Electro-Mechanical Design'),
-          _buildTabContent('On Site'),
-          _buildTabContent('Client Section'),
-          _buildTabContent('Exterior and Interior Architecture'),
         ],
       ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _errorMessage.isNotEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        _errorMessage,
+                        style: const TextStyle(color: Colors.red),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 16),
+                      ElevatedButton(
+                        onPressed: _loadProjectDetails,
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                )
+              : SingleChildScrollView(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Status and location row
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: _getStatusColor(_projectData['status'] ?? 'In Progress'),
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Text(
+                              _projectData['status'] ?? 'In Progress',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          if (_projectData['location'] != null && _projectData['location'].toString().isNotEmpty)
+                            Expanded(
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.location_on, size: 16),
+                                  const SizedBox(width: 4),
+                                  Expanded(
+                                    child: Text(
+                                      _projectData['location'].toString(),
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
+                      
+                      const SizedBox(height: 24),
+                      
+                      // Description section
+                      const Text(
+                        'Description',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.grey[100],
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          _projectData['description']?.toString() ?? 'No description available',
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                      ),
+                      
+                      const SizedBox(height: 24),
+                      
+                      // Manager section
+                      const Text(
+                        'Managed By',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: CircleAvatar(
+                          backgroundColor: const Color(0xFF1976D2),
+                          child: Text(
+                            (_projectData['managedBy'] ?? 'OT').toString().substring(0, 1),
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                        ),
+                        title: Text(_projectData['managedBy'] ?? 'Oussama Tahmaz'),
+                        subtitle: const Text('Project Manager'),
+                      ),
+                      
+                      const SizedBox(height: 24),
+                      
+                      // Created Date and Last Updated
+                      if (_projectData['createdAt'] != null || _projectData['updatedAt'] != null)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Project Timeline',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            if (_projectData['createdAt'] != null)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8.0),
+                                child: Row(
+                                  children: [
+                                    const Icon(Icons.calendar_today, size: 16),
+                                    const SizedBox(width: 8),
+                                    const Text(
+                                      'Created: ',
+                                      style: TextStyle(fontWeight: FontWeight.bold),
+                                    ),
+                                    Text(_projectData['createdAt'].toString()),
+                                  ],
+                                ),
+                              ),
+                            if (_projectData['updatedAt'] != null)
+                              Row(
+                                children: [
+                                  const Icon(Icons.update, size: 16),
+                                  const SizedBox(width: 8),
+                                  const Text(
+                                    'Last Updated: ',
+                                    style: TextStyle(fontWeight: FontWeight.bold),
+                                  ),
+                                  Text(_projectData['updatedAt'].toString()),
+                                ],
+                              ),
+                          ],
+                        ),
+                    ],
+                  ),
+                ),
     );
   }
 } 

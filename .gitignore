@@ -66,3 +66,8 @@ venv/
 .env.local
 .env.development
 .env.production
+
+# Website folder (for local reference only)
+Albani\ Software/
+AlbaniSoftware/
+Albani Software/
