@@ -451,7 +451,8 @@ class _ProjectsScreenState extends State<ProjectsScreen> with WidgetsBindingObse
                                       context,
                                       MaterialPageRoute(
                                         builder: (context) => ProjectDetailsScreen(
-                                          projectId: projectId,
+                                          projectId: project['id'] ?? project['guid'] ?? "0",
+                                          projectDetails: project,
                                           projectName: projectName,
                                         ),
                                       ),
@@ -557,8 +558,9 @@ class _ProjectsScreenState extends State<ProjectsScreen> with WidgetsBindingObse
                                     context,
                                     MaterialPageRoute(
                                       builder: (context) => ProjectDetailsScreen(
-                                        projectId: project['id'] ?? 0,
+                                        projectId: project['id'] ?? project['guid'] ?? "0",
                                         projectName: project['name'] ?? project['title'] ?? 'Untitled Project',
+                                        projectDetails: project,
                                       ),
                                     ),
                                   ).then((_) => setState(() => _needsRefresh = true));
@@ -586,34 +588,24 @@ class _ProjectsScreenState extends State<ProjectsScreen> with WidgetsBindingObse
         // Pagination controls - only show if we have more than 1 page
         if (totalPages > 1)
           Padding(
-            padding: const EdgeInsets.all(8.0),
+            padding: const EdgeInsets.all(16.0),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 IconButton(
-                  icon: const Icon(Icons.chevron_left),
+                  icon: const Icon(Icons.arrow_back_ios),
                   onPressed: _currentPage > 1 ? () => _changePage(_currentPage - 1) : null,
-                  color: const Color(0xFF1976D2),
                 ),
-                for (int i = 1; i <= totalPages; i++)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: ElevatedButton(
-                      onPressed: i != _currentPage ? () => _changePage(i) : null,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: i == _currentPage ? const Color(0xFF1976D2) : Colors.grey.shade200,
-                        foregroundColor: i == _currentPage ? Colors.white : Colors.black,
-                        minimumSize: const Size(40, 40),
-                        padding: EdgeInsets.zero,
-                        shape: const CircleBorder(),
-                      ),
-                      child: Text('$i'),
-                    ),
+                Text(
+                  'Page $_currentPage of $totalPages',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
                   ),
+                ),
                 IconButton(
-                  icon: const Icon(Icons.chevron_right),
+                  icon: const Icon(Icons.arrow_forward_ios),
                   onPressed: _currentPage < totalPages ? () => _changePage(_currentPage + 1) : null,
-                  color: const Color(0xFF1976D2),
                 ),
               ],
             ),
@@ -723,8 +715,9 @@ class _ProjectsScreenState extends State<ProjectsScreen> with WidgetsBindingObse
                       context,
                       MaterialPageRoute(
                         builder: (context) => ProjectDetailsScreen(
-                          projectId: project['id'],
+                          projectId: project['id'] ?? project['guid'] ?? "0",
                           projectName: project['name'] ?? project['title'] ?? 'Untitled Project',
+                          projectDetails: project,
                         ),
                       ),
                     );

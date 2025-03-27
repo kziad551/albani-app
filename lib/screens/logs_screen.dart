@@ -4,6 +4,13 @@ import '../widgets/app_drawer.dart';
 import '../services/api_service.dart';
 import 'package:intl/intl.dart';
 
+// Extension on String to capitalize first letter
+extension StringExtension on String {
+  String capitalize() {
+    return isEmpty ? '' : '${this[0].toUpperCase()}${substring(1)}';
+  }
+}
+
 class LogsScreen extends StatefulWidget {
   const LogsScreen({super.key});
 
@@ -13,10 +20,10 @@ class LogsScreen extends StatefulWidget {
 
 class _LogsScreenState extends State<LogsScreen> {
   final ApiService _apiService = ApiService();
-  List<Map<String, dynamic>> _logs = [];
-  List<Map<String, dynamic>> _filteredLogs = [];
+  List<Map<dynamic, dynamic>> _logs = [];
+  List<Map<dynamic, dynamic>> _filteredLogs = [];
   bool _isLoading = true;
-  String? _errorMessage = null;
+  String? _errorMessage;
   
   // Filter controllers
   final _userNameController = TextEditingController();
@@ -33,7 +40,7 @@ class _LogsScreenState extends State<LogsScreen> {
   int _totalLogs = 0;
   final int _logsPerPage = 50;
   bool _isLoadingMore = false;
-  ScrollController _scrollController = ScrollController();
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
@@ -66,7 +73,7 @@ class _LogsScreenState extends State<LogsScreen> {
     });
 
     try {
-      print('Fetching logs from API...');
+      debugPrint('Fetching logs from API...');
       
       final logs = await _apiService.getLogs(
         userName: _userNameController.text.isEmpty ? null : _userNameController.text,
@@ -74,22 +81,23 @@ class _LogsScreenState extends State<LogsScreen> {
         action: _actionController.text.isEmpty ? null : _actionController.text,
         fromDate: _fromDate,
         toDate: _toDate,
-        page: _currentPage,
-        pageSize: _logsPerPage,
+        page: 1,
+        pageSize: 2500, // Request a very large number of logs
       );
       
-      print('Fetched ${logs.length} logs');
+      debugPrint('Fetched ${logs.length} logs');
       
       if (mounted) {
         setState(() {
           _logs = logs;
-          _filteredLogs = logs;
-          _totalLogs = logs.length;
+          _applyTextFilter(); // Apply any text filtering
+          _totalLogs = _filteredLogs.length;
+          _totalPages = (_totalLogs / _logsPerPage).ceil();
           _isLoading = false;
         });
       }
     } catch (e) {
-      print('Error fetching logs: $e');
+      debugPrint('Error fetching logs: $e');
       if (mounted) {
         setState(() {
           _errorMessage = 'Failed to load logs: $e';
@@ -126,8 +134,8 @@ class _LogsScreenState extends State<LogsScreen> {
         if (moreLogs.isNotEmpty) {
           setState(() {
             _logs.addAll(moreLogs);
-            _filteredLogs = _logs;
-            _totalLogs = _logs.length;
+            _applyTextFilter();
+            _totalLogs = _filteredLogs.length;
             _isLoadingMore = false;
           });
           print('Added ${moreLogs.length} more logs, total: ${_logs.length}');
@@ -202,33 +210,127 @@ class _LogsScreenState extends State<LogsScreen> {
   }
 
   // Helper method to get timestamp from log with different possible field names
-  String _getTimestampFromLog(Map<String, dynamic> log) {
-    if (log['timestamp'] != null) {
-      return _formatDateTime(log['timestamp'].toString());
-    } else if (log['timeStamp'] != null) {
-      return _formatDateTime(log['timeStamp'].toString());
-    } else if (log['createdAt'] != null) {
-      return _formatDateTime(log['createdAt'].toString());
-    } else if (log['date'] != null) {
-      return _formatDateTime(log['date'].toString());
+  String _getTimestampFromLog(Map<dynamic, dynamic> log) {
+    try {
+      // Try various field names that might contain the timestamp
+      for (final field in [
+        'timestamp', 'timeStamp', 'createdAt', 'date', 'time', 
+        'creationDate', 'creationTime', 'updatedAt', 'createDate',
+        'dateCreated', 'dateTime'
+      ]) {
+        if (log[field] != null && log[field].toString().isNotEmpty) {
+          // Handle ISO date format or other common formats
+          try {
+            return _formatDateTime(log[field].toString());
+          } catch (e) {
+            debugPrint('Error formatting date from $field: $e');
+          }
+        }
+      }
+      
+      // Look for field names with timestamp in them
+      for (final key in log.keys) {
+        if ((key.toString().toLowerCase().contains('time') || 
+             key.toString().toLowerCase().contains('date') ||
+             key.toString().toLowerCase().contains('created')) && 
+            log[key] != null && 
+            log[key].toString().isNotEmpty) {
+          try {
+            return _formatDateTime(log[key].toString());
+          } catch (e) {
+            // Not a valid date format, continue to next field
+          }
+        }
+      }
+      
+      return 'No timestamp';
+    } catch (e) {
+      return 'Error: $e';
     }
-    return 'Unknown Time';
   }
   
   // Helper method to get details from log with different possible field names
-  String _getLogDetails(Map<String, dynamic> log) {
-    if (log['details'] != null && log['details'].toString().isNotEmpty) {
-      return log['details'].toString();
-    } else if (log['changes'] != null && log['changes'].toString().isNotEmpty) {
-      return log['changes'].toString();
-    } else if (log['description'] != null && log['description'].toString().isNotEmpty) {
-      return log['description'].toString();
-    } else if (log['displayName'] != null && log['displayName'].toString().isNotEmpty) {
-      return log['displayName'].toString();
-    } else if (log['message'] != null && log['message'].toString().isNotEmpty) {
-      return log['message'].toString();
+  String _getLogDetails(Map<dynamic, dynamic> log) {
+    // Try various field names that might contain details
+    for (final field in [
+      'details', 'changes', 'description', 'displayName', 'message',
+      'detail', 'data', 'properties', 'content', 'summary', 'info'
+    ]) {
+      if (log[field] != null) {
+        var value = log[field].toString();
+        if (value.isNotEmpty) {
+          return value;
+        }
+      }
     }
-    return '';
+    
+    // If no specific details field found, try to create a meaningful description
+    var description = '';
+    
+    if (log['entityName'] != null && log['action'] != null) {
+      var entity = log['entityName'].toString();
+      var action = log['action'].toString();
+      var targetName = '';
+      
+      // Try to find a name or identifier for the entity
+      for (final field in ['name', 'title', 'label', 'id', 'guid']) {
+        if (log[field] != null && log[field].toString().isNotEmpty) {
+          targetName = log[field].toString();
+          break;
+        }
+      }
+      
+      description = '$action $entity';
+      if (targetName.isNotEmpty) {
+        description += ' "$targetName"';
+      }
+      
+      return description;
+    }
+    
+    // Build description from available fields
+    List<String> parts = [];
+    for (var key in log.keys) {
+      if (!key.toString().toLowerCase().contains('time') && 
+          !key.toString().toLowerCase().contains('date') &&
+          !key.toString().toLowerCase().contains('id') &&
+          log[key] != null && 
+          log[key].toString().isNotEmpty &&
+          log[key].toString().length < 50) {  // Avoid very long values
+        parts.add('${key.toString().replaceAll('_', ' ').capitalize()}: ${log[key]}');
+        if (parts.length >= 3) break;  // Limit to 3 parts
+      }
+    }
+    
+    if (parts.isNotEmpty) {
+      return parts.join(' | ');
+    }
+    
+    return 'No details available';
+  }
+
+  // Apply text filtering based on changes text
+  void _applyTextFilter() {
+    final query = _changesController.text.toLowerCase();
+    if (query.isEmpty) {
+      _filteredLogs = _logs;
+    } else {
+      _filteredLogs = _logs.where((log) {
+        // Check various fields for the search term
+        final details = _getLogDetails(log).toLowerCase();
+        final userName = (log['userName'] ?? log['username'] ?? '').toString().toLowerCase();
+        final entityName = (log['entityName'] ?? log['entity'] ?? '').toString().toLowerCase();
+        final action = (log['action'] ?? '').toString().toLowerCase();
+        
+        return details.contains(query) || 
+               userName.contains(query) || 
+               entityName.contains(query) || 
+               action.contains(query);
+      }).toList();
+    }
+    
+    _totalLogs = _filteredLogs.length;
+    _totalPages = (_totalLogs / _logsPerPage).ceil();
   }
 
   @override
@@ -283,6 +385,7 @@ class _LogsScreenState extends State<LogsScreen> {
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFF1976D2),
                               foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                             ),
                           ),
                         ],
@@ -292,7 +395,7 @@ class _LogsScreenState extends State<LogsScreen> {
                     // Filter Panel
                     AnimatedContainer(
                       duration: const Duration(milliseconds: 300),
-                      height: _showFilters ? 300 : 0,
+                      height: _showFilters ? 370 : 0, // Increased height for the search box
                       child: SingleChildScrollView(
                         child: Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -326,6 +429,22 @@ class _LogsScreenState extends State<LogsScreen> {
                                   labelText: 'Action',
                                   border: OutlineInputBorder(),
                                 ),
+                              ),
+                              const SizedBox(height: 12),
+                              
+                              // Changes/Content Filter
+                              TextField(
+                                controller: _changesController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Search in Content',
+                                  border: OutlineInputBorder(),
+                                  hintText: 'Search in log details...',
+                                ),
+                                onChanged: (value) {
+                                  setState(() {
+                                    _applyTextFilter();
+                                  });
+                                },
                               ),
                               const SizedBox(height: 12),
                               
@@ -388,7 +507,19 @@ class _LogsScreenState extends State<LogsScreen> {
                                 mainAxisAlignment: MainAxisAlignment.end,
                                 children: [
                                   TextButton(
-                                    onPressed: _clearFilters,
+                                    onPressed: () {
+                                      _clearFilters();
+                                      _changesController.clear();
+                                      setState(() {
+                                        _applyTextFilter();
+                                      });
+                                    },
+                                    style: TextButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 16, 
+                                        vertical: 12,
+                                      ),
+                                    ),
                                     child: const Text('Clear Filters'),
                                   ),
                                   const SizedBox(width: 12),
@@ -402,11 +533,16 @@ class _LogsScreenState extends State<LogsScreen> {
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: const Color(0xFF1976D2),
                                       foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 16, 
+                                        vertical: 12,
+                                      ),
                                     ),
                                     child: const Text('Apply Filters'),
                                   ),
                                 ],
                               ),
+                              const SizedBox(height: 8), // Extra padding to prevent button cropping
                             ],
                           ),
                         ),
@@ -415,118 +551,157 @@ class _LogsScreenState extends State<LogsScreen> {
                     
                     // Logs Table
                     Expanded(
-                      child: _logs.isEmpty
-                          ? const Center(
-                              child: Text(
-                                'No logs found.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(fontSize: 16),
-                              ),
-                            )
-                          : RefreshIndicator(
-                              onRefresh: _loadLogs,
-                              child: ListView.builder(
-                                controller: _scrollController,
-                                padding: const EdgeInsets.all(16),
-                                itemCount: _logs.length + 1, // +1 for loading indicator
-                                itemBuilder: (context, index) {
-                                  if (index == _logs.length) {
-                                    // Show loading indicator at the end
-                                    return _isLoadingMore
-                                      ? const Center(
-                                          child: Padding(
-                                            padding: EdgeInsets.all(8.0),
-                                            child: CircularProgressIndicator(),
-                                          ),
-                                        )
-                                      : Container();
-                                  }
-                                  
-                                  final log = _logs[index];
-                                  
-                                  return Card(
-                                    margin: const EdgeInsets.only(bottom: 12),
-                                    elevation: 2,
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(16.0),
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Row(
-                                            children: [
-                                              Container(
-                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                                decoration: BoxDecoration(
-                                                  color: Colors.blue.withOpacity(0.2),
-                                                  borderRadius: BorderRadius.circular(4),
-                                                ),
-                                                child: Text(
-                                                  log['action'] ?? 'Unknown Action',
-                                                  style: const TextStyle(
-                                                    color: Colors.blue,
-                                                    fontWeight: FontWeight.bold,
-                                                    fontSize: 12,
-                                                  ),
-                                                ),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Container(
-                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                                decoration: BoxDecoration(
-                                                  color: Colors.purple.withOpacity(0.2),
-                                                  borderRadius: BorderRadius.circular(4),
-                                                ),
-                                                child: Text(
-                                                  log['entityName'] ?? 'Unknown Entity',
-                                                  style: const TextStyle(
-                                                    color: Colors.purple,
-                                                    fontWeight: FontWeight.bold,
-                                                    fontSize: 12,
-                                                  ),
-                                                ),
-                                              ),
-                                              const Spacer(),
-                                              Text(
-                                                _getTimestampFromLog(log),
-                                                style: TextStyle(
-                                                  color: Colors.grey[600],
-                                                  fontSize: 12,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 12),
-                                          Row(
-                                            children: [
-                                              const Icon(Icons.person, size: 16),
-                                              const SizedBox(width: 4),
-                                              Text(
-                                                log['userName'] ?? 'Unknown User',
-                                                style: const TextStyle(
-                                                  fontWeight: FontWeight.bold,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 8),
-                                          if (_getLogDetails(log).isNotEmpty)
-                                            Text(
-                                              _getLogDetails(log),
-                                              style: const TextStyle(fontSize: 14),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                  );
-                                },
+                      child: _buildLogsList(),
+                    ),
+                    
+                    // Pagination controls similar to Users page
+                    if (_totalPages > 1)
+                      Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.arrow_back_ios),
+                              onPressed: _currentPage > 1
+                                  ? () => _changePage(_currentPage - 1)
+                                  : null,
+                            ),
+                            Text(
+                              'Page $_currentPage of $_totalPages',
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
-                    ),
+                            IconButton(
+                              icon: const Icon(Icons.arrow_forward_ios),
+                              onPressed: _currentPage < _totalPages
+                                  ? () => _changePage(_currentPage + 1)
+                                  : null,
+                            ),
+                          ],
+                        ),
+                      ),
                   ],
                 ),
+    );
+  }
+
+  Widget _buildLogsList() {
+    if (_filteredLogs.isEmpty) {
+      return const Center(
+        child: Text(
+          'No logs found.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 16),
+        ),
+      );
+    }
+    
+    return RefreshIndicator(
+      onRefresh: _loadLogs,
+      child: ListView.builder(
+        controller: _scrollController,
+        padding: const EdgeInsets.all(16),
+        itemCount: _filteredLogs.length + (_isLoadingMore ? 1 : 0),
+        itemBuilder: (context, index) {
+          // Show loading indicator at the end
+          if (index == _filteredLogs.length) {
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(8.0),
+                child: CircularProgressIndicator(),
+              ),
+            );
+          }
+          
+          final log = _filteredLogs[index];
+          final timestamp = _getTimestampFromLog(log);
+          final details = _getLogDetails(log);
+          final userName = log['userName'] ?? log['username'] ?? 'Unknown User';
+          final action = log['action'] ?? 'Unknown Action';
+          final entityName = log['entityName'] ?? log['entity'] ?? 'Unknown Entity';
+          
+          return Card(
+            margin: const EdgeInsets.only(bottom: 12),
+            elevation: 2,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          action.toString(),
+                          style: const TextStyle(
+                            color: Colors.blue,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.purple.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          entityName.toString(),
+                          style: const TextStyle(
+                            color: Colors.purple,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        timestamp,
+                        style: TextStyle(
+                          color: Colors.grey[600],
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      const Icon(Icons.person, size: 16),
+                      const SizedBox(width: 4),
+                      Text(
+                        userName.toString(),
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  if (details.isNotEmpty)
+                    Text(
+                      details,
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 } 

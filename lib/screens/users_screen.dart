@@ -3,6 +3,8 @@ import '../widgets/app_header.dart';
 import '../widgets/app_drawer.dart';
 import '../services/api_service.dart';
 import '../config/app_config.dart';
+import 'edit_user_screen.dart';
+import 'add_user_screen.dart';
 
 class UsersScreen extends StatefulWidget {
   const UsersScreen({super.key});
@@ -44,9 +46,9 @@ class _UsersScreenState extends State<UsersScreen> {
     });
 
     try {
-      print('Fetching users from API...');
+      debugPrint('Fetching users from API...');
       final response = await _apiService.getUsers();
-      print('Fetched users response: $response');
+      debugPrint('Fetched users response type: ${response.runtimeType}');
       
       List<Map<String, dynamic>> usersList = [];
       
@@ -59,19 +61,18 @@ class _UsersScreenState extends State<UsersScreen> {
         }
       }
       
-      print('Processed ${usersList.length} users');
+      debugPrint('Processed ${usersList.length} users');
       
       if (mounted) {
         setState(() {
           _users = usersList;
           _totalUsers = usersList.length;
-          _totalPages = 1;
-          _currentPage = 1;
+          _totalPages = (_totalUsers / _usersPerPage).ceil();
           _isLoading = false;
         });
       }
     } catch (e) {
-      print('Error fetching users: $e');
+      debugPrint('Error fetching users: $e');
       if (mounted) {
         setState(() {
           _errorMessage = 'Failed to load users: $e';
@@ -125,6 +126,73 @@ class _UsersScreenState extends State<UsersScreen> {
     return 'Unknown User';
   }
 
+  // Function to handle user editing
+  void _editUser(Map<String, dynamic> user) {
+    // Navigate to edit user screen
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => EditUserScreen(user: user),
+      ),
+    ).then((_) {
+      // Refresh user list when returning from edit screen
+      _loadUsers();
+    });
+  }
+
+  // Function to handle user deletion
+  Future<void> _deleteUser(Map<String, dynamic> user) async {
+    // Show confirmation dialog
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm Deletion'),
+        content: Text('Are you sure you want to delete ${_getFullName(user)}?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('CANCEL'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('DELETE'),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+          ),
+        ],
+      ),
+    ) ?? false;
+
+    if (confirmed) {
+      setState(() {
+        _isLoading = true;
+      });
+
+      try {
+        // Get the user ID
+        final userId = user['id']?.toString() ?? '';
+        if (userId.isEmpty) {
+          throw Exception('Invalid user ID');
+        }
+
+        // Call the API to delete the user
+        await _apiService.delete('api/Employees/$userId');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${_getFullName(user)} deleted successfully')),
+        );
+
+        // Reload the user list
+        _loadUsers();
+      } catch (e) {
+        debugPrint('Error deleting user: $e');
+        setState(() {
+          _isLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to delete user: $e')),
+        );
+      }
+    }
+  }
+
   Color _getUserColor(int index) {
     final colors = [
       Colors.blue,
@@ -167,6 +235,22 @@ class _UsersScreenState extends State<UsersScreen> {
       backgroundColor: Colors.white,
       appBar: const AppHeader(),
       endDrawer: const AppDrawer(),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (context) => const AddUserScreen(),
+            ),
+          ).then((result) {
+            // Reload users if a new user was successfully added
+            if (result == true) {
+              _loadUsers();
+            }
+          });
+        },
+        backgroundColor: const Color(0xFF1976D2),
+        child: const Icon(Icons.add, color: Colors.white),
+      ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _errorMessage != null
@@ -275,6 +359,38 @@ class _UsersScreenState extends State<UsersScreen> {
                                         style: const TextStyle(
                                           fontWeight: FontWeight.bold,
                                         ),
+                                      ),
+                                      trailing: PopupMenuButton<String>(
+                                        icon: const Icon(Icons.more_vert),
+                                        onSelected: (value) {
+                                          if (value == 'edit') {
+                                            _editUser(user);
+                                          } else if (value == 'delete') {
+                                            _deleteUser(user);
+                                          }
+                                        },
+                                        itemBuilder: (context) => [
+                                          const PopupMenuItem(
+                                            value: 'edit',
+                                            child: Row(
+                                              children: [
+                                                Icon(Icons.edit, size: 20),
+                                                SizedBox(width: 8),
+                                                Text('Edit'),
+                                              ],
+                                            ),
+                                          ),
+                                          const PopupMenuItem(
+                                            value: 'delete',
+                                            child: Row(
+                                              children: [
+                                                Icon(Icons.delete, size: 20, color: Colors.red),
+                                                SizedBox(width: 8),
+                                                Text('Delete', style: TextStyle(color: Colors.red)),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                       subtitle: Column(
                                         crossAxisAlignment: CrossAxisAlignment.start,

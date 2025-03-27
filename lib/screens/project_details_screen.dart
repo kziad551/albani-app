@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'dart:math';
+import '../config/app_config.dart';
 import 'create_task_screen.dart';
 import '../services/api_service.dart';
 import '../widgets/app_header.dart';
@@ -7,41 +9,82 @@ import '../widgets/app_drawer.dart';
 import 'project_buckets_screen.dart';
 
 class ProjectDetailsScreen extends StatefulWidget {
-  final int projectId;
+  final dynamic projectId;
   final String projectName;
+  final Map<String, dynamic>? projectDetails;
 
   const ProjectDetailsScreen({
     super.key,
     required this.projectId,
     required this.projectName,
+    this.projectDetails,
   });
 
   @override
   State<ProjectDetailsScreen> createState() => _ProjectDetailsScreenState();
 }
 
-class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with SingleTickerProviderStateMixin {
-  late TabController _tabController;
-  final ApiService _apiService = ApiService();
-  Map<String, dynamic> _projectData = {};
+class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with TickerProviderStateMixin {
+  // API service
+  late ApiService _apiService;
+  
+  // UI state
   bool _isLoading = true;
   String _errorMessage = '';
   bool _showTaskFilter = false;
+  
+  // Task filters
   String? _sortBy;
   String? _status;
   String? _assignee;
   String? _priority;
   String? _groupBy;
+  
+  // Project data
+  Map<String, dynamic> _projectData = {};
+  List<Map<String, dynamic>> _projectBuckets = [];
+  
+  // Maps to store bucket files and tasks
+  Map<String, List<Map<String, dynamic>>> _bucketFiles = {};
+  Map<String, List<Map<String, dynamic>>> _bucketTasks = {};
+  
+  // Tab controller and tabs
+  late TabController _tabController;
+  List<Map<String, dynamic>> _tabs = [];
+  
   final _searchController = TextEditingController();
   
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 8, vsync: this);
-    _loadProjectDetails();
+    
+    // Initialize the API service
+    _apiService = ApiService();
+    
+    // Initialize the maps
+    _bucketFiles = {};
+    _bucketTasks = {};
+    
+    // Setup tabs
+    _setupTabs();
+    
+    // Load project data
+    _loadProjectData();
+    
+    // Load buckets for this project
+    _loadProjectBuckets();
   }
 
   Future<void> _loadProjectDetails() async {
+    if (widget.projectDetails != null && widget.projectDetails!.isNotEmpty) {
+      setState(() {
+        _projectData = Map<String, dynamic>.from(widget.projectDetails!);
+        _isLoading = false;
+      });
+      _loadProjectBuckets();
+      return;
+    }
+    
     setState(() {
       _isLoading = true;
       _errorMessage = '';
@@ -49,20 +92,175 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Single
 
     try {
       final projectData = await _apiService.getProjectById(widget.projectId);
+      
+      if (projectData.isEmpty) {
+        throw Exception('Project details could not be found');
+      }
+      
       if (mounted) {
         setState(() {
           _projectData = projectData;
           _isLoading = false;
         });
+        _loadProjectBuckets();
       }
     } catch (e) {
       debugPrint('Error loading project details: $e');
       if (mounted) {
         setState(() {
-          _errorMessage = 'Failed to load project details: $e';
+          _errorMessage = 'Failed to load project details: ${e.toString().split(':').first}';
           _isLoading = false;
         });
       }
+    }
+  }
+
+  Future<void> _loadProjectBuckets() async {
+    try {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = '';
+      });
+      
+      // Get project ID and ensure it's not empty
+      final projectId = widget.projectId;
+      if (projectId == null) {
+        throw Exception('Project ID is null');
+      }
+      
+      debugPrint('Loading buckets for project ID: $projectId');
+      
+      // Handle project ID - try to use it directly if it's a number, otherwise use as string
+      dynamic finalProjectId = projectId;
+      if (projectId is String) {
+        // Try to parse as int, but if it fails, use the string value
+        finalProjectId = int.tryParse(projectId) ?? projectId;
+      }
+      
+      debugPrint('Using project ID (${finalProjectId.runtimeType}): $finalProjectId');
+      
+      final buckets = await _apiService.getBuckets(projectId: finalProjectId);
+      
+      if (mounted) {
+        setState(() {
+          _projectBuckets = buckets;
+          _isLoading = false;
+          
+          // Set up tabs based on buckets
+          _tabs = buckets.map((bucket) => {
+            'title': bucket['name'] ?? 'Unknown',
+            'icon': Icons.folder,
+            'bucket': bucket,
+          }).toList();
+          
+          // Update tab controller with new length
+          _tabController = TabController(
+            length: _tabs.length,
+            vsync: this,
+          );
+        });
+        
+        // Load files and tasks for each bucket
+        for (var bucket in buckets) {
+          await _loadFilesAndTasksForBucket(bucket);
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading project buckets: $e');
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Failed to load project data: $e';
+          _isLoading = false;
+        });
+      }
+    }
+  }
+  
+  // Helper method to load files and tasks for a bucket
+  Future<void> _loadFilesAndTasksForBucket(Map<String, dynamic> bucket) async {
+    if (bucket.isEmpty) {
+      debugPrint('Skipping empty bucket');
+      return;
+    }
+    
+    try {
+      // Get bucket ID - try different possible field names
+      final bucketId = (bucket['id'] ?? bucket['guid'] ?? '').toString();
+      
+      if (bucketId.isEmpty) {
+        debugPrint('Bucket ID is empty, skipping: ${bucket.toString().substring(0, min(100, bucket.toString().length))}');
+        return;
+      }
+      
+      debugPrint('Loading files and tasks for bucket: ${bucket['name']} (ID: $bucketId)');
+      
+      // Load files
+      try {
+        final files = await _apiService.getBucketFiles(bucketId);
+        setState(() {
+          _bucketFiles[bucketId] = files;
+        });
+        debugPrint('Loaded ${files.length} files for bucket ${bucket['name']}');
+      } catch (e) {
+        debugPrint('Error loading files for bucket $bucketId: $e');
+        setState(() {
+          _bucketFiles[bucketId] = [];
+        });
+      }
+      
+      // Load tasks
+      try {
+        final tasks = await _apiService.getBucketTasks(bucketId);
+        setState(() {
+          _bucketTasks[bucketId] = tasks;
+        });
+        debugPrint('Loaded ${tasks.length} tasks for bucket ${bucket['name']}');
+      } catch (e) {
+        debugPrint('Error loading tasks for bucket $bucketId: $e');
+        setState(() {
+          _bucketTasks[bucketId] = [];
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading data for bucket ${bucket['name'] ?? 'Unknown'}: $e');
+    }
+  }
+  
+  Future<void> _loadBucketFiles(Map<String, dynamic> bucket) async {
+    try {
+      final bucketId = bucket['guid'] ?? bucket['id'] ?? '';
+      final bucketName = bucket['name'] ?? 'Unknown';
+      
+      if (bucketId.isEmpty) return;
+      
+      final files = await _apiService.getBucketFiles(bucketId);
+      
+      if (mounted) {
+        setState(() {
+          _bucketFiles[bucketName] = files;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading bucket files: $e');
+    }
+  }
+  
+  Future<void> _loadBucketTasks(Map<String, dynamic> bucket) async {
+    try {
+      final bucketId = bucket['guid'] ?? bucket['id'] ?? '';
+      final bucketName = bucket['name'] ?? 'Unknown';
+      
+      if (bucketId.isEmpty) return;
+      
+      final tasks = await _apiService.getBucketTasks(bucketId);
+      
+      if (mounted) {
+        setState(() {
+          _bucketTasks[bucketName] = tasks;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading bucket tasks: $e');
     }
   }
 
@@ -230,144 +428,346 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Single
     );
   }
 
-  Widget _buildTabContent(String title) {
-    return SingleChildScrollView(
+  Widget _buildTabContent(String tabTitle) {
+    // Find the tab that matches this title
+    final tab = _tabs.firstWhere(
+      (t) => t['title'] == tabTitle,
+      orElse: () => {},
+    );
+    
+    // Get the bucket from the tab
+    final bucket = tab['bucket'] as Map<String, dynamic>? ?? {};
+    
+    if (bucket.isEmpty) {
+      return const Center(
+        child: Text(
+          'No data found for this category',
+          style: TextStyle(color: Colors.grey),
+        ),
+      );
+    }
+    
+    final bucketId = bucket['id']?.toString() ?? '';
+    final files = _bucketFiles[bucketId] ?? [];
+    final tasks = _bucketTasks[bucketId] ?? [];
+    
+    return DefaultTabController(
+      length: 2,
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Text(
-              title,
-              style: const TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
+          Container(
+            color: Colors.grey.shade200,
+            child: const TabBar(
+              tabs: [
+                Tab(icon: Icon(Icons.folder), text: 'Files'),
+                Tab(icon: Icon(Icons.task), text: 'Tasks'),
+              ],
+              labelColor: Color(0xFF1976D2),
+              unselectedLabelColor: Colors.grey,
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
-            child: Text(
-              '$title Bucket',
-              style: TextStyle(
-                fontSize: 16,
-                color: Colors.grey[600],
-              ),
-            ),
-          ),
-          const SizedBox(height: 24),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
-            child: Card(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: BorderSide(color: Colors.grey[300]!),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Files',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        IconButton(
-                          onPressed: () {
-                            // TODO: Implement file upload
-                          },
-                          icon: const Icon(
-                            Icons.cloud_upload_outlined,
-                            color: Color(0xFF1976D2),
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (title == 'Architecture') ...[
-                      const ListTile(
-                        leading: Icon(Icons.insert_drive_file),
-                        title: Text('LE MILLENIUM-All Blocks -Arc...'),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.share),
-                            SizedBox(width: 8),
-                            Icon(Icons.download),
-                            SizedBox(width: 8),
-                            Icon(Icons.delete),
-                          ],
-                        ),
-                      ),
-                    ] else if (title == 'Electro-Mechanical Design') ...[
-                      const ListTile(
-                        leading: Icon(Icons.insert_drive_file),
-                        title: Text('MILLENIUM-MEP-28-10-2024'),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.share),
-                            SizedBox(width: 8),
-                            Icon(Icons.download),
-                            SizedBox(width: 8),
-                            Icon(Icons.delete),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 24),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          Expanded(
+            child: TabBarView(
               children: [
-                const Text(
-                  'Tasks',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                Row(
-                  children: [
-                    TextButton.icon(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            fullscreenDialog: true,
-                            builder: (context) => const CreateTaskScreen(),
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.add),
-                      label: const Text('ADD TASK'),
-                      style: TextButton.styleFrom(
-                        foregroundColor: const Color(0xFF1976D2),
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: _showTaskFilterDialog,
-                      icon: const Icon(Icons.filter_list),
-                    ),
-                  ],
-                ),
+                // Files tab
+                _buildFilesTab(bucketId, bucket['name'] ?? 'Unknown'),
+                
+                // Tasks tab
+                _buildTasksTab(bucketId, bucket['name'] ?? 'Unknown'),
               ],
             ),
           ),
         ],
       ),
     );
+  }
+  
+  // Build the files tab content for a bucket
+  Widget _buildFilesTab(String bucketId, String bucketName) {
+    final files = _bucketFiles[bucketId] ?? [];
+    
+    if (files.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.folder_open, size: 48, color: Colors.grey),
+            const SizedBox(height: 16),
+            const Text(
+              'No files found',
+              style: TextStyle(color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () async {
+                try {
+                  final refreshedFiles = await _apiService.getBucketFiles(bucketId);
+                  setState(() {
+                    _bucketFiles[bucketId] = refreshedFiles;
+                  });
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Failed to refresh files: $e')),
+                  );
+                }
+              },
+              child: const Text('Refresh'),
+            ),
+          ],
+        ),
+      );
+    }
+    
+    return ListView.builder(
+      itemCount: files.length,
+      padding: const EdgeInsets.all(8.0),
+      itemBuilder: (context, index) {
+        final file = files[index];
+        return Card(
+          elevation: 2,
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          child: ListTile(
+            leading: _getFileIcon(file['fileType'] ?? 'unknown'),
+            title: Text(file['name'] ?? 'Unnamed File'),
+            subtitle: Text(file['description'] ?? ''),
+            trailing: const Icon(Icons.download),
+            onTap: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Download not implemented')),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+  
+  // Build the tasks tab content for a bucket
+  Widget _buildTasksTab(String bucketId, String bucketName) {
+    final tasks = _bucketTasks[bucketId] ?? [];
+    
+    if (tasks.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.task, size: 48, color: Colors.grey),
+            const SizedBox(height: 16),
+            const Text(
+              'No tasks found',
+              style: TextStyle(color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () async {
+                try {
+                  final refreshedTasks = await _apiService.getBucketTasks(bucketId);
+                  setState(() {
+                    _bucketTasks[bucketId] = refreshedTasks;
+                  });
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Failed to refresh tasks: $e')),
+                  );
+                }
+              },
+              child: const Text('Refresh'),
+            ),
+          ],
+        ),
+      );
+    }
+    
+    return ListView.builder(
+      itemCount: tasks.length,
+      padding: const EdgeInsets.all(8.0),
+      itemBuilder: (context, index) {
+        final task = tasks[index];
+        return Card(
+          elevation: 2,
+          margin: const EdgeInsets.symmetric(vertical: 4),
+          child: ListTile(
+            leading: const Icon(Icons.check_circle_outline),
+            title: Text(task['title'] ?? task['name'] ?? 'Unnamed Task'),
+            subtitle: Text(task['description'] ?? ''),
+            trailing: _getStatusIcon(task['status'] ?? 'pending'),
+            onTap: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('View task details coming soon')),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+  
+  // Get the appropriate icon for a file type
+  Widget _getFileIcon(String fileType) {
+    IconData iconData;
+    Color iconColor;
+    
+    switch (fileType.toLowerCase()) {
+      case 'pdf':
+        iconData = Icons.picture_as_pdf;
+        iconColor = Colors.red;
+        break;
+      case 'doc':
+      case 'docx':
+        iconData = Icons.description;
+        iconColor = Colors.blue;
+        break;
+      case 'xls':
+      case 'xlsx':
+        iconData = Icons.table_chart;
+        iconColor = Colors.green;
+        break;
+      case 'dwg':
+        iconData = Icons.architecture;
+        iconColor = Colors.orange;
+        break;
+      case 'zip':
+      case 'rar':
+        iconData = Icons.folder_zip;
+        iconColor = Colors.purple;
+        break;
+      case 'jpg':
+      case 'jpeg':
+      case 'png':
+        iconData = Icons.image;
+        iconColor = Colors.amber;
+        break;
+      default:
+        iconData = Icons.insert_drive_file;
+        iconColor = Colors.grey;
+    }
+    
+    return Icon(iconData, color: iconColor);
+  }
+  
+  // Get the appropriate icon for a task status
+  Widget _getStatusIcon(String status) {
+    IconData iconData;
+    Color iconColor;
+    
+    switch (status.toLowerCase()) {
+      case 'completed':
+        iconData = Icons.check_circle;
+        iconColor = Colors.green;
+        break;
+      case 'in progress':
+        iconData = Icons.sync;
+        iconColor = Colors.blue;
+        break;
+      case 'pending':
+        iconData = Icons.pending;
+        iconColor = Colors.orange;
+        break;
+      case 'rejected':
+        iconData = Icons.cancel;
+        iconColor = Colors.red;
+        break;
+      default:
+        iconData = Icons.help_outline;
+        iconColor = Colors.grey;
+    }
+    
+    return Icon(iconData, color: iconColor);
+  }
+
+  // Find the bucket with the matching name or title
+  Map<String, dynamic> _findBucketByName(String tabTitle) {
+    debugPrint('Finding bucket for tab: $tabTitle');
+    
+    // Handle common bucket titles with variations
+    final Map<String, List<String>> commonAliases = {
+      'Architecture': ['Architecture', 'Arch', 'architecture', 'arch'],
+      'Structural Design': ['Structural Design', 'Structural', 'structural', 'structure', 'struct'],
+      'Mechanical': ['Mechanical', 'HVAC', 'MEP', 'mechanical'],
+      'Electrical': ['Electrical', 'Electric', 'electrical', 'Lighting'],
+      'Plumbing': ['Plumbing', 'Water', 'plumbing'],
+      'Project Management': ['Project Management', 'PM', 'Management'],
+      'Bill of Quantity': ['Bill of Quantity', 'BoQ', 'Quantity', 'Quantities'],
+      'Client Section': ['Client Section', 'Client', 'client'],
+      'On Site': ['On Site', 'Site', 'Construction Site', 'on-site'],
+    };
+    
+    // Normalize the tab title
+    final normalizedTabTitle = tabTitle.trim().toLowerCase();
+    
+    // First try: Direct match with name or title
+    try {
+      final bucket = _projectBuckets.firstWhere(
+        (b) => 
+            (b['name'] ?? '').toString().trim().toLowerCase() == normalizedTabTitle ||
+            (b['title'] ?? '').toString().trim().toLowerCase() == normalizedTabTitle,
+        orElse: () => <String, dynamic>{},
+      );
+      
+      if (bucket.isNotEmpty) {
+        debugPrint('Found bucket by direct name/title match: ${bucket['name']}');
+        return bucket;
+      }
+    } catch (e) {
+      debugPrint('Error in direct match: $e');
+    }
+    
+    // Second try: Check against aliases
+    for (var entry in commonAliases.entries) {
+      final standardName = entry.key;
+      final aliases = entry.value;
+      
+      if (aliases.any((alias) => alias.toLowerCase().contains(normalizedTabTitle) || 
+                               normalizedTabTitle.contains(alias.toLowerCase()))) {
+        try {
+          final bucket = _projectBuckets.firstWhere(
+            (b) => 
+                aliases.any((alias) => 
+                    (b['name'] ?? '').toString().toLowerCase().contains(alias.toLowerCase()) ||
+                    (b['title'] ?? '').toString().toLowerCase().contains(alias.toLowerCase()) ||
+                    alias.toLowerCase().contains((b['name'] ?? '').toString().toLowerCase()) ||
+                    alias.toLowerCase().contains((b['title'] ?? '').toString().toLowerCase())
+                ),
+            orElse: () => <String, dynamic>{},
+          );
+          
+          if (bucket.isNotEmpty) {
+            debugPrint('Found bucket by alias match: ${bucket['name']}');
+            return bucket;
+          }
+        } catch (e) {
+          debugPrint('Error in alias match: $e');
+        }
+      }
+    }
+    
+    // Third try: Look for any bucket with similar name
+    try {
+      final bucket = _projectBuckets.firstWhere(
+        (b) => 
+            (b['name'] ?? '').toString().toLowerCase().contains(normalizedTabTitle) ||
+            (b['title'] ?? '').toString().toLowerCase().contains(normalizedTabTitle) ||
+            normalizedTabTitle.contains((b['name'] ?? '').toString().toLowerCase()) ||
+            normalizedTabTitle.contains((b['title'] ?? '').toString().toLowerCase()),
+        orElse: () => <String, dynamic>{},
+      );
+      
+      if (bucket.isNotEmpty) {
+        debugPrint('Found bucket by partial match: ${bucket['name']}');
+        return bucket;
+      }
+    } catch (e) {
+      debugPrint('Error in partial match: $e');
+    }
+    
+    // Last resort: Just take the first bucket or return empty
+    if (_projectBuckets.isNotEmpty) {
+      debugPrint('No matching bucket found, using first available: ${_projectBuckets.first['name']}');
+      return _projectBuckets.first;
+    }
+    
+    debugPrint('No buckets available for tab: $tabTitle');
+    return <String, dynamic>{}; // Return empty map if no bucket found
   }
 
   Color _getStatusColor(String status) {
@@ -387,7 +787,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Single
     }
   }
 
-  void _navigateToEdit() {
+  void _navigateToEditProject() {
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -399,54 +799,78 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Single
           status: _projectData['status'] ?? 'In Progress',
         ),
       ),
-    ).then((_) => _loadProjectDetails());
+    ).then((_) => _loadProjectData());
   }
 
-  Future<void> _showDeleteConfirmation() async {
-    final confirm = await showDialog<bool>(
+  void _showDeleteConfirmation() {
+    // For now, we'll just show a dialog without actual deletion
+    showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Project'),
-        content: const Text(
-          'Are you sure you want to delete this project? This action cannot be undone.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('CANCEL'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text(
-              'DELETE',
-              style: TextStyle(color: Colors.red),
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Confirmation'),
+          content: const Text('This feature is currently disabled'),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
             ),
-          ),
-        ],
-      ),
+          ],
+        );
+      },
     );
-    
-    if (confirm == true) {
-      try {
-        await _apiService.deleteProject(widget.projectId);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Project deleted successfully'),
-            ),
-          );
-          Navigator.pop(context);
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to delete project: $e'),
-              backgroundColor: Colors.red,
-            ),
-          );
+  }
+
+  // Set up the tabs for the project details screen
+  void _setupTabs() {
+    _tabs = [
+      {'title': 'Files', 'icon': Icons.folder},
+      {'title': 'Tasks', 'icon': Icons.task},
+    ];
+    _tabController = TabController(length: _tabs.length, vsync: this);
+  }
+
+  // Load project data
+  Future<void> _loadProjectData() async {
+    try {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = '';
+      });
+
+      // If project details were passed, use them immediately
+      if (widget.projectDetails != null && widget.projectDetails!.isNotEmpty) {
+        _projectData = Map<String, dynamic>.from(widget.projectDetails!);
+      } else {
+        // Otherwise load from API
+        final projects = await _apiService.getProjects();
+        
+        // Convert both IDs to string for comparison
+        final projectIdString = widget.projectId.toString();
+        final project = projects.firstWhere(
+          (p) => p['id'].toString() == projectIdString || p['guid'].toString() == projectIdString,
+          orElse: () => <String, dynamic>{},
+        );
+        
+        if (project.isNotEmpty) {
+          _projectData = project;
+        } else {
+          throw Exception('Project not found');
         }
       }
+      
+      setState(() {
+        _isLoading = false;
+      });
+      
+      // After loading project data, load the buckets
+      await _loadProjectBuckets();
+    } catch (e) {
+      debugPrint('Error loading project data: $e');
+      setState(() {
+        _errorMessage = 'Failed to load project data: $e';
+        _isLoading = false;
+      });
     }
   }
 
@@ -454,67 +878,8 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Single
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.black),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: Text(
-          _isLoading ? 'Project Details' : (_projectData['name'] ?? _projectData['title'] ?? 'Project Details'),
-          style: const TextStyle(color: Colors.black),
-        ),
-        actions: [
-          if (!_isLoading && _errorMessage.isEmpty)
-            IconButton(
-              icon: const Icon(Icons.folder_special, color: Colors.blue),
-              tooltip: 'View Buckets',
-              onPressed: () {
-                Navigator.pushNamed(
-                  context,
-                  '/project_buckets',
-                  arguments: {
-                    'projectId': widget.projectId,
-                    'projectName': widget.projectName,
-                  },
-                );
-              },
-            ),
-          if (!_isLoading && _errorMessage.isEmpty)
-            PopupMenuButton<String>(
-              onSelected: (value) {
-                if (value == 'edit') {
-                  _navigateToEdit();
-                } else if (value == 'delete') {
-                  _showDeleteConfirmation();
-                }
-              },
-              itemBuilder: (BuildContext context) => [
-                const PopupMenuItem(
-                  value: 'edit',
-                  child: Row(
-                    children: [
-                      Icon(Icons.edit, size: 20),
-                      SizedBox(width: 8),
-                      Text('Edit Project'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'delete',
-                  child: Row(
-                    children: [
-                      Icon(Icons.delete, size: 20, color: Colors.red),
-                      SizedBox(width: 8),
-                      Text('Delete Project', style: TextStyle(color: Colors.red)),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-        ],
-      ),
+      appBar: const AppHeader(),
+      endDrawer: const AppDrawer(),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _errorMessage.isNotEmpty
@@ -522,158 +887,140 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Single
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
+                      const Icon(Icons.error_outline, color: Colors.red, size: 48),
+                      const SizedBox(height: 16),
                       Text(
-                        _errorMessage,
+                        'Error: $_errorMessage',
                         style: const TextStyle(color: Colors.red),
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 16),
                       ElevatedButton(
-                        onPressed: _loadProjectDetails,
+                        onPressed: () {
+                          setState(() {
+                            _isLoading = true;
+                            _errorMessage = '';
+                          });
+                          _loadProjectData();
+                          _loadProjectBuckets();
+                        },
                         child: const Text('Retry'),
                       ),
                     ],
                   ),
                 )
-              : SingleChildScrollView(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Status and location row
-                      Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: _getStatusColor(_projectData['status'] ?? 'In Progress'),
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            child: Text(
-                              _projectData['status'] ?? 'In Progress',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          if (_projectData['location'] != null && _projectData['location'].toString().isNotEmpty)
-                            Expanded(
-                              child: Row(
-                                children: [
-                                  const Icon(Icons.location_on, size: 16),
-                                  const SizedBox(width: 4),
-                                  Expanded(
-                                    child: Text(
-                                      _projectData['location'].toString(),
-                                      style: const TextStyle(
-                                        fontSize: 14,
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                        ],
-                      ),
-                      
-                      const SizedBox(height: 24),
-                      
-                      // Description section
-                      const Text(
-                        'Description',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.grey[100],
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          _projectData['description']?.toString() ?? 'No description available',
-                          style: const TextStyle(fontSize: 14),
-                        ),
-                      ),
-                      
-                      const SizedBox(height: 24),
-                      
-                      // Manager section
-                      const Text(
-                        'Managed By',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: CircleAvatar(
-                          backgroundColor: const Color(0xFF1976D2),
-                          child: Text(
-                            (_projectData['managedBy'] ?? 'OT').toString().substring(0, 1),
-                            style: const TextStyle(color: Colors.white),
-                          ),
-                        ),
-                        title: Text(_projectData['managedBy'] ?? 'Oussama Tahmaz'),
-                        subtitle: const Text('Project Manager'),
-                      ),
-                      
-                      const SizedBox(height: 24),
-                      
-                      // Created Date and Last Updated
-                      if (_projectData['createdAt'] != null || _projectData['updatedAt'] != null)
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Project Timeline',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            if (_projectData['createdAt'] != null)
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 8.0),
-                                child: Row(
-                                  children: [
-                                    const Icon(Icons.calendar_today, size: 16),
-                                    const SizedBox(width: 8),
-                                    const Text(
-                                      'Created: ',
-                                      style: TextStyle(fontWeight: FontWeight.bold),
-                                    ),
-                                    Text(_projectData['createdAt'].toString()),
-                                  ],
-                                ),
-                              ),
-                            if (_projectData['updatedAt'] != null)
-                              Row(
-                                children: [
-                                  const Icon(Icons.update, size: 16),
-                                  const SizedBox(width: 8),
-                                  const Text(
-                                    'Last Updated: ',
-                                    style: TextStyle(fontWeight: FontWeight.bold),
-                                  ),
-                                  Text(_projectData['updatedAt'].toString()),
-                                ],
-                              ),
-                          ],
-                        ),
-                    ],
+              : Column(
+                  children: [
+                    // Project Header with back button
+                    _buildProjectHeader(),
+                    
+                    // Project Info Card
+                    _buildProjectInfoCard(),
+                    
+                    // Tabs and Content
+                    _buildTabsAndContent(),
+                  ],
+                ),
+    );
+  }
+
+  Widget _buildProjectInfoCard() {
+    return Card(
+      margin: const EdgeInsets.all(8.0),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              _projectData['description'] ?? 'No description available',
+              style: const TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Status: ${_projectData['status'] ?? 'Unknown'}',
+                  style: TextStyle(
+                    color: _getStatusColor(_projectData['status'] ?? ''),
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
+                Text(
+                  'Location: ${_projectData['location'] ?? 'Not specified'}',
+                  style: const TextStyle(color: Colors.grey),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTabsAndContent() {
+    if (_tabs.isEmpty) {
+      return const Expanded(
+        child: Center(
+          child: Text(
+            'No buckets found for this project',
+            style: TextStyle(color: Colors.grey),
+          ),
+        ),
+      );
+    }
+
+    return Expanded(
+      child: Column(
+        children: [
+          TabBar(
+            controller: _tabController,
+            isScrollable: true,
+            tabs: _tabs.map((tab) => Tab(
+              icon: Icon(tab['icon'] as IconData),
+              text: tab['title'] as String,
+            )).toList(),
+          ),
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: _tabs.map((tab) => _buildTabContent(tab['title'] as String)).toList(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Build project header with back button and edit button
+  Widget _buildProjectHeader() {
+    return Container(
+      color: const Color(0xFF1976D2),
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(Icons.arrow_back, color: Colors.white),
+            onPressed: () => Navigator.pop(context),
+          ),
+          Expanded(
+            child: Text(
+              _projectData['name'] ?? 'Unknown Project',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18.0,
+                fontWeight: FontWeight.bold,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.edit, color: Colors.white),
+            onPressed: _navigateToEditProject,
+          ),
+        ],
+      ),
     );
   }
 } 

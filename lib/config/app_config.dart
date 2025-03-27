@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 class AppConfig {
   // Backend API configuration
   static const String apiHost = 'albani.smartsoft-me.com';
@@ -16,11 +18,23 @@ class AppConfig {
   // App settings
   static const int connectionTimeout = 30;  // in seconds
   static const int maxRetryAttempts = 3;
-  static const int paginationLimit = 7;  // Number of projects per page
+  static const int paginationLimit = 10;  // Number of projects per page
   
   // Feature flags
-  static const bool enableOfflineMode = true;  // Enable fallback to mock data if API fails
+  static const bool enableOfflineMode = false;  // Permanently disable offline mode
+  static const bool debugMode = true;          // Enable debug prints for development
+  static const int apiTimeoutSeconds = 30;     // Timeout for API calls
   
   // Debug settings
-  static const bool debugApiCalls = true;  // Print API call details for debugging
+  static bool get debugApiCalls => kDebugMode;  // Only true in debug builds
+
+  // Default values
+  static const String defaultUsername = 'SAdmin';  // Default username for testing
+  static const String defaultPassword = 'P@ssw0rd';  // Default password for testing
+
+  // Mock data configuration
+  static const int mockProjectsCount = 5;       // Number of mock projects to generate
+  static const int mockBucketsCount = 5;        // Number of mock buckets per project
+  static const int mockFilesCount = 3;          // Number of mock files per bucket
+  static const int mockTasksCount = 2;          // Number of mock tasks per bucket
 } 

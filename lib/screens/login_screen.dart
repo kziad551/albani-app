@@ -3,6 +3,7 @@ import '../services/auth_service.dart';
 import 'projects_screen.dart';
 import '../config/app_config.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -89,7 +90,7 @@ class _LoginScreenState extends State<LoginScreen> {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
-        body: '{"username":"$username","password":"$password"}',
+        body: '{"userName":"$username","password":"$password"}',
       );
       
       setState(() {
@@ -102,6 +103,33 @@ class _LoginScreenState extends State<LoginScreen> {
     } catch (e) {
       setState(() {
         _responseDetails = 'Error: $e';
+        _isLoading = false;
+      });
+    }
+  }
+
+  // New method to bypass login directly
+  Future<void> _bypassLogin() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      // Write a mock token to secure storage
+      const storage = FlutterSecureStorage();
+      await storage.write(key: 'accessToken', value: 'mock-token-for-testing');
+      
+      // Navigate to projects screen
+      if (mounted) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (context) => const ProjectsScreen(),
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Error: $e';
         _isLoading = false;
       });
     }
@@ -314,6 +342,20 @@ class _LoginScreenState extends State<LoginScreen> {
                                   child: const Text('Try Direct Login (Debug)'),
                                 ),
                               ),
+                            // Add bypass login button for offline testing
+                            SizedBox(
+                              width: double.infinity,
+                              child: TextButton(
+                                onPressed: _bypassLogin,
+                                child: const Text(
+                                  'Continue in Offline Mode',
+                                  style: TextStyle(
+                                    color: Colors.green,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ),
                             const SizedBox(height: 16),
                             
                             // Debug info - only show in debug mode
