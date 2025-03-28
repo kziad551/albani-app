@@ -322,4 +322,8 @@ class AuthService {
       return false;
     }
   }
+
+  Future<String?> getToken() async {
+    return await storage.read(key: 'token');
+  }
 } 

@@ -32,7 +32,7 @@ class _BucketsScreenState extends State<BucketsScreen> {
     });
 
     try {
-      // Using the same endpoint as the website (BucketConfigs)
+      // Get default buckets (no project ID)
       final buckets = await _apiService.getBuckets();
       
       // Sort buckets by line number
@@ -42,15 +42,19 @@ class _BucketsScreenState extends State<BucketsScreen> {
         return lineA.compareTo(lineB);
       });
       
-      setState(() {
-        _buckets = buckets;
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _buckets = buckets;
+          _isLoading = false;
+        });
+      }
     } catch (e) {
-      setState(() {
-        _errorMessage = 'Failed to load buckets: $e';
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Failed to load buckets: $e';
+          _isLoading = false;
+        });
+      }
     }
   }
 

@@ -7,6 +7,10 @@ import '../widgets/app_header.dart';
 import 'edit_project_screen.dart';
 import '../widgets/app_drawer.dart';
 import 'project_buckets_screen.dart';
+import 'dart:convert';
+import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class ProjectDetailsScreen extends StatefulWidget {
   final dynamic projectId;
@@ -26,7 +30,7 @@ class ProjectDetailsScreen extends StatefulWidget {
 
 class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with TickerProviderStateMixin {
   // API service
-  late ApiService _apiService;
+  final ApiService _apiService = ApiService();
   
   // UI state
   bool _isLoading = true;
@@ -43,6 +47,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
   // Project data
   Map<String, dynamic> _projectData = {};
   List<Map<String, dynamic>> _projectBuckets = [];
+  List<Map<String, dynamic>> _projectEmployees = [];
   
   // Maps to store bucket files and tasks
   Map<String, List<Map<String, dynamic>>> _bucketFiles = {};
@@ -54,12 +59,14 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
   
   final _searchController = TextEditingController();
   
+  // Add missing state variables
+  String _projectName = '';
+  String _projectStatus = '';
+  String _projectLocation = '';
+  
   @override
   void initState() {
     super.initState();
-    
-    // Initialize the API service
-    _apiService = ApiService();
     
     // Initialize the maps
     _bucketFiles = {};
@@ -70,20 +77,10 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
     
     // Load project data
     _loadProjectData();
-    
-    // Load buckets for this project
-    _loadProjectBuckets();
   }
 
-  Future<void> _loadProjectDetails() async {
-    if (widget.projectDetails != null && widget.projectDetails!.isNotEmpty) {
-      setState(() {
-        _projectData = Map<String, dynamic>.from(widget.projectDetails!);
-        _isLoading = false;
-      });
-      _loadProjectBuckets();
-      return;
-    }
+  Future<void> _loadProjectData() async {
+    if (!mounted) return;
     
     setState(() {
       _isLoading = true;
@@ -91,176 +88,295 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
     });
 
     try {
-      final projectData = await _apiService.getProjectById(widget.projectId);
-      
-      if (projectData.isEmpty) {
-        throw Exception('Project details could not be found');
+      // First validate token
+      final isValid = await _apiService.validateToken();
+      if (!isValid) {
+        throw Exception('Please log in again to continue');
       }
       
+      // Get project ID and ensure it's not empty
+      final projectId = widget.projectId;
+      if (projectId == null || projectId.toString().trim().isEmpty) {
+        throw Exception('Project ID is required');
+      }
+      
+      debugPrint('Loading project data for ID: $projectId (type: ${projectId.runtimeType})');
+      
+      // Load project details with buckets included
+      Map<String, dynamic> projectDetails;
+      try {
+        if (widget.projectDetails != null) {
+          projectDetails = widget.projectDetails!;
+          debugPrint('Using provided project details: ${projectDetails['title']}');
+        } else {
+          // This will also fetch the project's buckets
+          projectDetails = await _apiService.getProjectById(projectId);
+          debugPrint('Fetched project details from API: ${projectDetails['title']}');
+        }
+      } catch (e) {
+        debugPrint('Error loading project details: $e');
+        throw Exception('Failed to load project details. Please try again.');
+      }
+      
+      if (!mounted) return;
+      
+      setState(() {
+        _projectData = projectDetails;
+        _projectName = projectDetails['title'] ?? 'Unknown Project';
+        _projectStatus = projectDetails['status'] ?? 'Unknown';
+        _projectLocation = projectDetails['location'] ?? 'Unknown';
+      });
+      
+      // First set up the tabs to ensure the UI shows immediately
+      _setupTabs();
+      
+      // Handle buckets data which should be included in the project details
+      List<Map<String, dynamic>> buckets = [];
+      
+      if (projectDetails.containsKey('buckets') && projectDetails['buckets'] != null) {
+        debugPrint('Buckets in project details type: ${projectDetails['buckets'].runtimeType}');
+        
+        if (projectDetails['buckets'] is List) {
+          buckets = List<Map<String, dynamic>>.from(projectDetails['buckets']);
+          debugPrint('Found ${buckets.length} buckets in project details');
+        } else if (projectDetails['buckets'] is Map) {
+          // If it's a single bucket as a map, wrap it in a list
+          buckets = [Map<String, dynamic>.from(projectDetails['buckets'])];
+          debugPrint('Found a single bucket in project details');
+        } else if (projectDetails['buckets'] is String) {
+          // Try to parse if it's a JSON string
+          try {
+            final parsed = jsonDecode(projectDetails['buckets']);
+            if (parsed is List) {
+              buckets = List<Map<String, dynamic>>.from(parsed);
+            } else if (parsed is Map) {
+              buckets = [Map<String, dynamic>.from(parsed)];
+            }
+            debugPrint('Parsed buckets from string: ${buckets.length}');
+          } catch (e) {
+            debugPrint('Error parsing buckets from string: $e');
+          }
+        }
+      } else {
+        debugPrint('No buckets found in project details, trying to fetch them separately');
+        
+        // Try to fetch buckets directly if not included in project details
+        try {
+          final projectGuid = projectDetails['guid'] ?? projectId;
+          buckets = await _apiService.getBuckets(projectId: projectGuid);
+          debugPrint('Fetched ${buckets.length} buckets separately');
+        } catch (e) {
+          debugPrint('Error fetching buckets separately: $e');
+          // Fall back to standard buckets
+          buckets = _apiService.getStandardBuckets();
+          debugPrint('Using ${buckets.length} standard buckets as fallback');
+        }
+      }
+      
+      // Load project employees
+      final projectGuid = projectDetails['guid'] ?? projectId;
+      try {
+        final employees = await _apiService.getProjectEmployees(projectGuid.toString());
+        debugPrint('Loaded ${employees.length} project employees');
+        if (mounted) {
+          setState(() {
+            _projectEmployees = employees;
+          });
+        }
+      } catch (e) {
+        debugPrint('Error loading project employees: $e');
+      }
+      
+      // Process the buckets
+      await _processProjectBuckets(buckets, projectGuid.toString());
+      
+    } catch (e) {
+      debugPrint('Error loading project data: $e');
       if (mounted) {
         setState(() {
-          _projectData = projectData;
+          _errorMessage = e.toString();
           _isLoading = false;
         });
-        _loadProjectBuckets();
+        
+        // If unauthorized, navigate back to login
+        if (e.toString().toLowerCase().contains('unauthorized') || 
+            e.toString().toLowerCase().contains('log in again')) {
+          Navigator.of(context).pushReplacementNamed('/login');
+        }
       }
-    } catch (e) {
-      debugPrint('Error loading project details: $e');
+    } finally {
       if (mounted) {
         setState(() {
-          _errorMessage = 'Failed to load project details: ${e.toString().split(':').first}';
           _isLoading = false;
         });
       }
     }
   }
 
-  Future<void> _loadProjectBuckets() async {
+  Future<void> _processProjectBuckets(List<Map<String, dynamic>> buckets, String projectGuid) async {
     try {
+      debugPrint('Processing ${buckets.length} buckets for project: $projectGuid');
+      
+      // Print all buckets and their GUIDs for debugging
+      for (var bucket in buckets) {
+        debugPrint('Bucket from API: ${bucket['name'] ?? bucket['title']} (${bucket['guid'] ?? 'no-guid'}) - ID: ${bucket['id'] ?? 'no-id'}');
+      }
+      
+      // Check if buckets have GUIDs, which are crucial for API calls
+      final bucketsWithoutGuid = buckets.where((b) => b['guid'] == null).length;
+      if (bucketsWithoutGuid > 0) {
+        debugPrint('WARNING: $bucketsWithoutGuid buckets don\'t have GUIDs, which may cause issues');
+      }
+      
+      if (!mounted) return;
+      
       setState(() {
-        _isLoading = true;
-        _errorMessage = '';
+        _projectBuckets = buckets;
+        
+        // Clear existing bucket assignments
+        for (var tab in _tabs) {
+          tab.remove('bucket');
+          tab.remove('bucketGuid');
+        }
+        
+        // First, try to match buckets by name/title directly with tabs
+        for (var bucket in buckets) {
+          if (bucket['guid'] == null) continue; // Skip buckets without GUIDs
+          
+          final bucketName = (bucket['name'] ?? '').toString().toUpperCase();
+          final bucketTitle = (bucket['title'] ?? '').toString().toUpperCase();
+          
+          // Find matching tab
+          final matchingTab = _tabs.firstWhere(
+            (tab) => 
+              tab['title'].toString().toUpperCase() == bucketName || 
+              tab['title'].toString().toUpperCase() == bucketTitle,
+            orElse: () => {},
+          );
+          
+          if (matchingTab.isNotEmpty) {
+            debugPrint('Matched bucket ${bucket['name'] ?? bucket['title']} with tab ${matchingTab['title']}');
+            matchingTab['bucket'] = bucket;
+            matchingTab['bucketGuid'] = bucket['guid'];
+          }
+        }
+        
+        // For any tabs without assigned buckets, try more flexible matching
+        for (var tab in _tabs.where((t) => !t.containsKey('bucketGuid'))) {
+          final tabTitle = tab['title'].toString().toUpperCase();
+          
+          // Find any bucket that contains the tab title or vice versa
+          final matchingBucket = buckets.firstWhere(
+            (bucket) {
+              if (bucket['guid'] == null) return false; // Skip buckets without GUIDs
+              
+              final bucketName = (bucket['name'] ?? '').toString().toUpperCase();
+              final bucketTitle = (bucket['title'] ?? '').toString().toUpperCase();
+              
+              return bucketName.contains(tabTitle) || 
+                     tabTitle.contains(bucketName) ||
+                     bucketTitle.contains(tabTitle) ||
+                     tabTitle.contains(bucketTitle);
+            },
+            orElse: () => {},
+          );
+          
+          if (matchingBucket.isNotEmpty) {
+            debugPrint('Flexibly matched bucket ${matchingBucket['name'] ?? matchingBucket['title']} with tab ${tab['title']}');
+            tab['bucket'] = matchingBucket;
+            tab['bucketGuid'] = matchingBucket['guid'];
+          }
+        }
+        
+        // For tabs that still don't have buckets, use the first bucket that isn't already assigned
+        final assignedBucketGuids = _tabs
+            .where((t) => t.containsKey('bucketGuid'))
+            .map((t) => t['bucketGuid'])
+            .toList();
+        
+        final unassignedTabs = _tabs.where((t) => !t.containsKey('bucketGuid')).toList();
+        final unassignedBuckets = buckets
+            .where((b) => b['guid'] != null && !assignedBucketGuids.contains(b['guid']))
+            .toList();
+        
+        for (int i = 0; i < unassignedTabs.length && i < unassignedBuckets.length; i++) {
+          final bucket = unassignedBuckets[i];
+          debugPrint('Assigning unmatched bucket ${bucket['name'] ?? bucket['title']} to tab ${unassignedTabs[i]['title']}');
+          unassignedTabs[i]['bucket'] = bucket;
+          unassignedTabs[i]['bucketGuid'] = bucket['guid'];
+        }
+        
+        // For any remaining tabs, create placeholder buckets
+        for (var tab in _tabs.where((t) => !t.containsKey('bucketGuid'))) {
+          debugPrint('Creating placeholder bucket for tab ${tab['title']}');
+          final placeholderId = '${tab['key']}-${DateTime.now().millisecondsSinceEpoch}';
+          tab['bucket'] = {
+            'id': tab['key'],
+            'guid': placeholderId,
+            'name': tab['title'],
+            'title': tab['title'],
+            'description': '${tab['title']} section',
+            'projectGuid': projectGuid,
+          };
+          tab['bucketGuid'] = placeholderId;
+        }
       });
       
-      // Get project ID and ensure it's not empty
-      final projectId = widget.projectId;
-      if (projectId == null) {
-        throw Exception('Project ID is null');
+      // Log the final tab-bucket assignments
+      for (var tab in _tabs) {
+        debugPrint('Final assignment: Tab ${tab['title']} → Bucket GUID: ${tab['bucketGuid']}');
       }
       
-      debugPrint('Loading buckets for project ID: $projectId');
-      
-      // Handle project ID - try to use it directly if it's a number, otherwise use as string
-      dynamic finalProjectId = projectId;
-      if (projectId is String) {
-        // Try to parse as int, but if it fails, use the string value
-        finalProjectId = int.tryParse(projectId) ?? projectId;
-      }
-      
-      debugPrint('Using project ID (${finalProjectId.runtimeType}): $finalProjectId');
-      
-      final buckets = await _apiService.getBuckets(projectId: finalProjectId);
-      
-      if (mounted) {
-        setState(() {
-          _projectBuckets = buckets;
-          _isLoading = false;
+      // Load files and tasks for each tab's bucket
+      for (var tab in _tabs) {
+        if (tab['bucketGuid'] != null) {
+          final bucketGuid = tab['bucketGuid'].toString();
+          final tabTitle = tab['title'].toString();
           
-          // Set up tabs based on buckets
-          _tabs = buckets.map((bucket) => {
-            'title': bucket['name'] ?? 'Unknown',
-            'icon': Icons.folder,
-            'bucket': bucket,
-          }).toList();
+          // Skip placeholder buckets
+          if (bucketGuid.contains('-guid') || bucketGuid.contains('-bucket') || bucketGuid.contains(DateTime.now().year.toString())) {
+            debugPrint('Skipping API calls for placeholder bucket: $bucketGuid');
+            continue;
+          }
           
-          // Update tab controller with new length
-          _tabController = TabController(
-            length: _tabs.length,
-            vsync: this,
-          );
-        });
-        
-        // Load files and tasks for each bucket
-        for (var bucket in buckets) {
-          await _loadFilesAndTasksForBucket(bucket);
+          debugPrint('Loading files and tasks for tab $tabTitle with bucket $bucketGuid');
+          
+          try {
+            await _loadFilesAndTasksForBucket(bucketGuid);
+          } catch (e) {
+            debugPrint('Error loading files and tasks for bucket $bucketGuid: $e');
+          }
         }
       }
     } catch (e) {
-      debugPrint('Error loading project buckets: $e');
-      if (mounted) {
-        setState(() {
-          _errorMessage = 'Failed to load project data: $e';
-          _isLoading = false;
-        });
-      }
+      debugPrint('Error processing project buckets: $e');
     }
   }
-  
-  // Helper method to load files and tasks for a bucket
-  Future<void> _loadFilesAndTasksForBucket(Map<String, dynamic> bucket) async {
-    if (bucket.isEmpty) {
-      debugPrint('Skipping empty bucket');
-      return;
-    }
-    
+
+  Future<void> _loadFilesAndTasksForBucket(String bucketGuid) async {
     try {
-      // Get bucket ID - try different possible field names
-      final bucketId = (bucket['id'] ?? bucket['guid'] ?? '').toString();
+      debugPrint('Loading files and tasks for bucket GUID: $bucketGuid');
       
-      if (bucketId.isEmpty) {
-        debugPrint('Bucket ID is empty, skipping: ${bucket.toString().substring(0, min(100, bucket.toString().length))}');
-        return;
-      }
+      // Load files and tasks in parallel
+      final filesAndTasks = await Future.wait([
+        _apiService.getBucketFiles(bucketGuid),
+        _apiService.getBucketTasks(bucketGuid),
+      ]);
       
-      debugPrint('Loading files and tasks for bucket: ${bucket['name']} (ID: $bucketId)');
+      final files = filesAndTasks[0];
+      final tasks = filesAndTasks[1];
       
-      // Load files
-      try {
-        final files = await _apiService.getBucketFiles(bucketId);
-        setState(() {
-          _bucketFiles[bucketId] = files;
-        });
-        debugPrint('Loaded ${files.length} files for bucket ${bucket['name']}');
-      } catch (e) {
-        debugPrint('Error loading files for bucket $bucketId: $e');
-        setState(() {
-          _bucketFiles[bucketId] = [];
-        });
-      }
+      debugPrint('Loaded ${files.length} files and ${tasks.length} tasks for bucket $bucketGuid');
       
-      // Load tasks
-      try {
-        final tasks = await _apiService.getBucketTasks(bucketId);
-        setState(() {
-          _bucketTasks[bucketId] = tasks;
-        });
-        debugPrint('Loaded ${tasks.length} tasks for bucket ${bucket['name']}');
-      } catch (e) {
-        debugPrint('Error loading tasks for bucket $bucketId: $e');
-        setState(() {
-          _bucketTasks[bucketId] = [];
-        });
-      }
+      if (!mounted) return;
+      
+      setState(() {
+        _bucketFiles[bucketGuid] = files;
+        _bucketTasks[bucketGuid] = tasks;
+      });
     } catch (e) {
-      debugPrint('Error loading data for bucket ${bucket['name'] ?? 'Unknown'}: $e');
-    }
-  }
-  
-  Future<void> _loadBucketFiles(Map<String, dynamic> bucket) async {
-    try {
-      final bucketId = bucket['guid'] ?? bucket['id'] ?? '';
-      final bucketName = bucket['name'] ?? 'Unknown';
-      
-      if (bucketId.isEmpty) return;
-      
-      final files = await _apiService.getBucketFiles(bucketId);
-      
-      if (mounted) {
-        setState(() {
-          _bucketFiles[bucketName] = files;
-        });
-      }
-    } catch (e) {
-      debugPrint('Error loading bucket files: $e');
-    }
-  }
-  
-  Future<void> _loadBucketTasks(Map<String, dynamic> bucket) async {
-    try {
-      final bucketId = bucket['guid'] ?? bucket['id'] ?? '';
-      final bucketName = bucket['name'] ?? 'Unknown';
-      
-      if (bucketId.isEmpty) return;
-      
-      final tasks = await _apiService.getBucketTasks(bucketId);
-      
-      if (mounted) {
-        setState(() {
-          _bucketTasks[bucketName] = tasks;
-        });
-      }
-    } catch (e) {
-      debugPrint('Error loading bucket tasks: $e');
+      debugPrint('Error loading files and tasks for bucket $bucketGuid: $e');
+      // Don't throw, just log the error and continue
     }
   }
 
@@ -435,170 +551,761 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
       orElse: () => {},
     );
     
-    // Get the bucket from the tab
-    final bucket = tab['bucket'] as Map<String, dynamic>? ?? {};
-    
-    if (bucket.isEmpty) {
+    if (tab.isEmpty) {
       return const Center(
         child: Text(
-          'No data found for this category',
+          'Tab information not found',
           style: TextStyle(color: Colors.grey),
         ),
       );
     }
     
-    final bucketId = bucket['id']?.toString() ?? '';
-    final files = _bucketFiles[bucketId] ?? [];
-    final tasks = _bucketTasks[bucketId] ?? [];
+    // Get the bucket GUID from the tab
+    final bucketGuid = tab['bucketGuid']?.toString();
     
-    return DefaultTabController(
-      length: 2,
+    if (bucketGuid == null) {
+      return const Center(
+        child: Text(
+          'No bucket found for this section',
+          style: TextStyle(color: Colors.grey),
+        ),
+      );
+    }
+    
+    final bucket = tab['bucket'] as Map<String, dynamic>? ?? {};
+    final files = _bucketFiles[bucketGuid] ?? [];
+    final tasks = _bucketTasks[bucketGuid] ?? [];
+    
+    return SingleChildScrollView(
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            color: Colors.grey.shade200,
-            child: const TabBar(
-              tabs: [
-                Tab(icon: Icon(Icons.folder), text: 'Files'),
-                Tab(icon: Icon(Icons.task), text: 'Tasks'),
-              ],
-              labelColor: Color(0xFF1976D2),
-              unselectedLabelColor: Colors.grey,
+          // Bucket Title
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Text(
+              bucket['name'] ?? tabTitle,
+              style: const TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF1976D2),
+              ),
             ),
           ),
-          Expanded(
-            child: TabBarView(
+
+          // Files Section
+          Container(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Files tab
-                _buildFilesTab(bucketId, bucket['name'] ?? 'Unknown'),
-                
-                // Tasks tab
-                _buildTasksTab(bucketId, bucket['name'] ?? 'Unknown'),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Files',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.upload_file),
+                      onPressed: () async {
+                        try {
+                          // Show file picker
+                          final result = await FilePicker.platform.pickFiles();
+                          
+                          if (result != null && result.files.isNotEmpty) {
+                            final file = result.files.first;
+                            if (file.path != null) {
+                              // Show loading dialog
+                              showDialog(
+                                context: context,
+                                barrierDismissible: false,
+                                builder: (context) => const Center(
+                                  child: CircularProgressIndicator(),
+                                ),
+                              );
+                              
+                              try {
+                                // Upload the file
+                                final uploadedFile = await _apiService.uploadFile(
+                                  bucketGuid,
+                                  file.path!,
+                                );
+                                
+                                // Refresh the bucket
+                                await _loadFilesAndTasksForBucket(bucketGuid);
+                                
+                                if (mounted) {
+                                  // Check if Navigator can be safely used
+                                  if (Navigator.of(context).canPop()) {
+                                    Navigator.pop(context); // Close loading dialog
+                                  }
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('File uploaded successfully'),
+                                    ),
+                                  );
+                                }
+                              } catch (e) {
+                                if (mounted) {
+                                  // Check if Navigator can be safely used
+                                  if (Navigator.of(context).canPop()) {
+                                    Navigator.pop(context); // Close loading dialog
+                                  }
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('Failed to upload file: $e'),
+                                    ),
+                                  );
+                                }
+                              }
+                            }
+                          }
+                        } catch (e) {
+                          debugPrint('Error picking file: $e');
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Failed to pick file: $e'),
+                              ),
+                            );
+                          }
+                        }
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (files.isEmpty)
+                  const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(16.0),
+                      child: Text('No files found', style: TextStyle(color: Colors.grey)),
+                    ),
+                  )
+                else
+                  ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: files.length,
+                    itemBuilder: (context, index) {
+                      final file = files[index];
+                      final fileName = file['name'] ?? 
+                                    file['fileName'] ?? 
+                                    file['title'] ?? 
+                                    'Unnamed File';
+                      
+                      return Card(
+                        child: ListTile(
+                          leading: const Icon(Icons.insert_drive_file),
+                          title: Text(fileName),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.download),
+                                onPressed: () async {
+                                  try {
+                                    final fileId = file['id'] ?? file['guid'];
+                                    if (fileId == null) {
+                                      throw Exception('File ID not found');
+                                    }
+                                    
+                                    // Show loading dialog
+                                    showDialog(
+                                      context: context,
+                                      barrierDismissible: false,
+                                      builder: (context) => const Center(
+                                        child: CircularProgressIndicator(),
+                                      ),
+                                    );
+                                    
+                                    // Get download URL
+                                    final downloadUrl = await _apiService.getFileDownloadUrl(fileId.toString());
+                                    
+                                    if (mounted) {
+                                      // Check if Navigator can be safely used
+                                      if (Navigator.of(context).canPop()) {
+                                        Navigator.pop(context); // Close loading dialog
+                                      }
+                                      
+                                      // Launch URL in browser
+                                      if (await canLaunchUrl(Uri.parse(downloadUrl))) {
+                                        await launchUrl(Uri.parse(downloadUrl));
+                                      } else {
+                                        throw Exception('Could not launch URL');
+                                      }
+                                    }
+                                  } catch (e) {
+                                    debugPrint('Error downloading file: $e');
+                                    if (mounted) {
+                                      // Check if Navigator can be safely used
+                                      if (Navigator.of(context).canPop()) {
+                                        Navigator.pop(context); // Close loading dialog if open
+                                      }
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('Failed to download file: $e'),
+                                        ),
+                                      );
+                                    }
+                                  }
+                                },
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.share),
+                                onPressed: () async {
+                                  try {
+                                    final fileId = file['id'] ?? file['guid'];
+                                    if (fileId == null) {
+                                      throw Exception('File ID not found');
+                                    }
+                                    
+                                    // Get download URL for sharing
+                                    final downloadUrl = await _apiService.getFileDownloadUrl(fileId.toString());
+                                    
+                                    if (mounted) {
+                                      // Share the URL
+                                      await Share.share(
+                                        'Check out this file: $downloadUrl',
+                                        subject: fileName,
+                                      );
+                                    }
+                                  } catch (e) {
+                                    debugPrint('Error sharing file: $e');
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('Failed to share file: $e'),
+                                        ),
+                                      );
+                                    }
+                                  }
+                                },
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete),
+                                onPressed: () async {
+                                  // Show confirmation dialog
+                                  final shouldDelete = await showDialog<bool>(
+                                    context: context,
+                                    builder: (context) => AlertDialog(
+                                      title: const Text('Delete File'),
+                                      content: Text('Are you sure you want to delete "$fileName"?'),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(context, false),
+                                          child: const Text('CANCEL'),
+                                        ),
+                                        TextButton(
+                                          onPressed: () => Navigator.pop(context, true),
+                                          child: const Text('DELETE'),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                  
+                                  if (shouldDelete == true && mounted) {
+                                    try {
+                                      final fileId = file['id'] ?? file['guid'];
+                                      if (fileId == null) {
+                                        throw Exception('File ID not found');
+                                      }
+                                      
+                                      // Show loading dialog
+                                      showDialog(
+                                        context: context,
+                                        barrierDismissible: false,
+                                        builder: (context) => const Center(
+                                          child: CircularProgressIndicator(),
+                                        ),
+                                      );
+                                      
+                                      // Delete the file
+                                      await _apiService.deleteFile(fileId.toString());
+                                      
+                                      // Refresh the bucket
+                                      await _loadFilesAndTasksForBucket(bucketGuid);
+                                      
+                                      if (mounted) {
+                                        // Check if Navigator can be safely used
+                                        if (Navigator.of(context).canPop()) {
+                                          Navigator.pop(context); // Close loading dialog
+                                        }
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          const SnackBar(
+                                            content: Text('File deleted successfully'),
+                                          ),
+                                        );
+                                      }
+                                    } catch (e) {
+                                      debugPrint('Error deleting file: $e');
+                                      if (mounted) {
+                                        // Check if Navigator can be safely used
+                                        if (Navigator.of(context).canPop()) {
+                                          Navigator.pop(context); // Close loading dialog
+                                        }
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: Text('Failed to delete file: $e'),
+                                          ),
+                                        );
+                                      }
+                                    }
+                                  }
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+              ],
+            ),
+          ),
+
+          const Divider(height: 32),
+
+          // Tasks Section
+          Container(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Tasks',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    TextButton.icon(
+                      icon: const Icon(Icons.add),
+                      label: const Text('ADD TASK'),
+                      onPressed: () {
+                        // Navigate to task creation screen
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => CreateTaskScreen(
+                              projectId: widget.projectId.toString(),
+                              projectName: _projectData['title'] ?? widget.projectName,
+                              bucketId: bucketGuid,
+                              bucketName: bucket['name'] ?? tabTitle,
+                              onTaskCreated: (Map<String, dynamic> taskData) async {
+                                // Handle newly created task
+                                if (mounted) {
+                                  setState(() {
+                                    if (_bucketTasks.containsKey(bucketGuid)) {
+                                      _bucketTasks[bucketGuid]!.add(taskData);
+                                    } else {
+                                      _bucketTasks[bucketGuid] = [taskData];
+                                    }
+                                  });
+                                  
+                                  // Refresh the bucket to get the real task data from the server
+                                  try {
+                                    // Give the server a moment to process the task
+                                    await Future.delayed(const Duration(seconds: 1));
+                                    await _loadFilesAndTasksForBucket(bucketGuid);
+                                    debugPrint('Refreshed bucket tasks after task creation');
+                                  } catch (e) {
+                                    debugPrint('Error refreshing bucket after task creation: $e');
+                                  }
+                                }
+                              },
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton.icon(
+                      icon: const Icon(Icons.filter_list),
+                      label: const Text('FILTER TASKS'),
+                      onPressed: () => _showTaskFilterDialog(),
+                    ),
+                  ],
+                ),
+                if (tasks.isEmpty)
+                  const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(16.0),
+                      child: Text('No tasks found', style: TextStyle(color: Colors.grey)),
+                    ),
+                  )
+                else
+                  ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: _sortAndFilterTasks(tasks, bucketGuid).length,
+                    itemBuilder: (context, index) {
+                      // Get the sorted/filtered tasks list
+                      final filteredTasks = _sortAndFilterTasks(tasks, bucketGuid);
+                      if (index >= filteredTasks.length) {
+                        return const SizedBox.shrink();
+                      }
+                      
+                      final task = filteredTasks[index];
+                      
+                      // Get task information with fallbacks
+                      final String taskTitle = _getSafeString(task['title']) ?? _getSafeString(task['name']) ?? 'Unnamed Task';
+                      final String taskDesc = _getSafeString(task['description']) ?? _getSafeString(task['desc']) ?? '';
+                      final String taskStatus = _getSafeString(task['status']) ?? 'pending';
+                      final String taskAssignee = _getSafeString(task['assignedTo']) ?? _getSafeString(task['assignee']) ?? 'Unassigned';
+                      final String taskPriority = _getSafeString(task['priority']) ?? 'None';
+                      
+                      // Determine the priority color
+                      Color priorityColor = Colors.grey;
+                      if (taskPriority.toLowerCase() == 'high') {
+                        priorityColor = Colors.red;
+                      } else if (taskPriority.toLowerCase() == 'medium') {
+                        priorityColor = Colors.orange;
+                      } else if (taskPriority.toLowerCase() == 'low') {
+                        priorityColor = Colors.green;
+                      }
+                      
+                      return Card(
+                        margin: const EdgeInsets.symmetric(vertical: 4),
+                        child: ListTile(
+                          leading: _getStatusIcon(taskStatus),
+                          title: Text(taskTitle),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (taskDesc.isNotEmpty) Text(taskDesc),
+                              const SizedBox(height: 4),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      'Assigned to: $taskAssignee',
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey,
+                                      ),
+                                    ),
+                                  ),
+                                  if (taskPriority.toLowerCase() != 'none')
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: priorityColor,
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: Text(
+                                        taskPriority,
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.edit),
+                                onPressed: () {
+                                  // Navigate to edit task screen
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => CreateTaskScreen(
+                                        projectId: widget.projectId.toString(),
+                                        projectName: _projectData['title'] ?? widget.projectName,
+                                        bucketId: bucketGuid,
+                                        bucketName: bucket['name'] ?? tabTitle,
+                                        existingTask: task,
+                                        isEditMode: true,
+                                        onTaskCreated: (Map<String, dynamic> updatedTask) async {
+                                          // Handle updated task
+                                          if (mounted) {
+                                            setState(() {
+                                              // Replace the old task with the updated one
+                                              if (_bucketTasks.containsKey(bucketGuid)) {
+                                                final index = _bucketTasks[bucketGuid]!.indexWhere((t) => 
+                                                  t['id'] == task['id'] || t['guid'] == task['guid']);
+                                                if (index >= 0) {
+                                                  _bucketTasks[bucketGuid]![index] = updatedTask;
+                                                }
+                                              }
+                                            });
+                                            
+                                            // Refresh the bucket to get the real task data from the server
+                                            try {
+                                              await Future.delayed(const Duration(seconds: 1));
+                                              await _loadFilesAndTasksForBucket(bucketGuid);
+                                              debugPrint('Refreshed bucket tasks after task update');
+                                            } catch (e) {
+                                              debugPrint('Error refreshing bucket after task update: $e');
+                                            }
+                                          }
+                                        },
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete),
+                                onPressed: () {
+                                  showDialog(
+                                    context: context,
+                                    builder: (BuildContext context) {
+                                      return AlertDialog(
+                                        title: const Text('Confirm Deletion'),
+                                        content: Text('Are you sure you want to delete task "$taskTitle"?'),
+                                        actions: <Widget>[
+                                          TextButton(
+                                            onPressed: () => Navigator.of(context).pop(),
+                                            child: const Text('CANCEL'),
+                                          ),
+                                          TextButton(
+                                            onPressed: () async {
+                                              Navigator.of(context).pop();
+                                              
+                                              try {
+                                                // Show loading dialog
+                                                showDialog(
+                                                  context: context,
+                                                  barrierDismissible: false,
+                                                  builder: (context) => const Center(
+                                                    child: CircularProgressIndicator(),
+                                                  ),
+                                                );
+                                                
+                                                final taskId = task['id'] ?? task['guid'];
+                                                if (taskId == null) {
+                                                  throw Exception('Task ID not found');
+                                                }
+                                                
+                                                // Delete the task
+                                                await _apiService.deleteTask(taskId.toString());
+                                                
+                                                // Refresh the bucket
+                                                await _loadFilesAndTasksForBucket(bucketGuid);
+                                                
+                                                if (mounted) {
+                                                  // Check if Navigator can be safely used
+                                                  if (Navigator.of(context).canPop()) {
+                                                    Navigator.pop(context); // Close loading dialog
+                                                  }
+                                                  ScaffoldMessenger.of(context).showSnackBar(
+                                                    SnackBar(content: Text('Task "$taskTitle" deleted')),
+                                                  );
+                                                }
+                                              } catch (e) {
+                                                if (mounted) {
+                                                  // Check if Navigator can be safely used
+                                                  if (Navigator.of(context).canPop()) {
+                                                    Navigator.pop(context); // Close loading dialog
+                                                  }
+                                                  ScaffoldMessenger.of(context).showSnackBar(
+                                                    SnackBar(content: Text('Failed to delete task: $e')),
+                                                  );
+                                                }
+                                              }
+                                            },
+                                            child: const Text('DELETE'),
+                                          ),
+                                        ],
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                            ],
+                          ),
+                          isThreeLine: true,
+                          onTap: () {
+                            // Show task details in a bottom sheet
+                            showModalBottomSheet(
+                              context: context,
+                              isScrollControlled: true,
+                              shape: const RoundedRectangleBorder(
+                                borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+                              ),
+                              builder: (context) => DraggableScrollableSheet(
+                                initialChildSize: 0.6,
+                                maxChildSize: 0.9,
+                                minChildSize: 0.4,
+                                expand: false,
+                                builder: (context, scrollController) {
+                                  return SingleChildScrollView(
+                                    controller: scrollController,
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(16.0),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          // Header with close button
+                                          Row(
+                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              const Text(
+                                                'Task Details',
+                                                style: TextStyle(
+                                                  fontSize: 20,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                              IconButton(
+                                                icon: const Icon(Icons.close),
+                                                onPressed: () => Navigator.pop(context),
+                                              ),
+                                            ],
+                                          ),
+                                          const Divider(),
+                                          
+                                          // Title
+                                          const Text(
+                                            'Title',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 16,
+                                            ),
+                                          ),
+                                          Text(taskTitle),
+                                          const SizedBox(height: 16),
+                                          
+                                          // Status
+                                          Row(
+                                            children: [
+                                              const Text(
+                                                'Status',
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 16,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 16),
+                                              Chip(
+                                                avatar: _getStatusIcon(taskStatus),
+                                                label: Text(taskStatus),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 16),
+                                          
+                                          // Priority
+                                          Row(
+                                            children: [
+                                              const Text(
+                                                'Priority',
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 16,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 16),
+                                              Chip(
+                                                backgroundColor: priorityColor,
+                                                label: Text(
+                                                  taskPriority,
+                                                  style: const TextStyle(color: Colors.white),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 16),
+                                          
+                                          // Assignee
+                                          Row(
+                                            children: [
+                                              const Text(
+                                                'Assignee',
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 16,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 16),
+                                              Chip(
+                                                avatar: const CircleAvatar(
+                                                  backgroundColor: Colors.blue,
+                                                  child: Icon(Icons.person, size: 16, color: Colors.white),
+                                                ),
+                                                label: Text(taskAssignee),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 16),
+                                          
+                                          // Description
+                                          const Text(
+                                            'Description',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 16,
+                                            ),
+                                          ),
+                                          Text(taskDesc.isNotEmpty ? taskDesc : 'No description provided'),
+                                          const SizedBox(height: 24),
+                                          
+                                          // Comments section
+                                          const Text(
+                                            'Comments',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 16,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 8),
+                                          const Text('No comments yet. Be the first one to comment!'),
+                                          const SizedBox(height: 16),
+                                          
+                                          // Comment input
+                                          TextField(
+                                            decoration: InputDecoration(
+                                              hintText: 'Type a comment...',
+                                              border: OutlineInputBorder(
+                                                borderRadius: BorderRadius.circular(8),
+                                              ),
+                                              suffixIcon: TextButton(
+                                                onPressed: () {
+                                                  // Add comment functionality
+                                                  ScaffoldMessenger.of(context).showSnackBar(
+                                                    const SnackBar(content: Text('Adding comments coming soon')),
+                                                  );
+                                                },
+                                                child: const Text('POST'),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            );
+                          },
+                        ),
+                      );
+                    },
+                  ),
               ],
             ),
           ),
         ],
       ),
-    );
-  }
-  
-  // Build the files tab content for a bucket
-  Widget _buildFilesTab(String bucketId, String bucketName) {
-    final files = _bucketFiles[bucketId] ?? [];
-    
-    if (files.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.folder_open, size: 48, color: Colors.grey),
-            const SizedBox(height: 16),
-            const Text(
-              'No files found',
-              style: TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: () async {
-                try {
-                  final refreshedFiles = await _apiService.getBucketFiles(bucketId);
-                  setState(() {
-                    _bucketFiles[bucketId] = refreshedFiles;
-                  });
-                } catch (e) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Failed to refresh files: $e')),
-                  );
-                }
-              },
-              child: const Text('Refresh'),
-            ),
-          ],
-        ),
-      );
-    }
-    
-    return ListView.builder(
-      itemCount: files.length,
-      padding: const EdgeInsets.all(8.0),
-      itemBuilder: (context, index) {
-        final file = files[index];
-        return Card(
-          elevation: 2,
-          margin: const EdgeInsets.symmetric(vertical: 4),
-          child: ListTile(
-            leading: _getFileIcon(file['fileType'] ?? 'unknown'),
-            title: Text(file['name'] ?? 'Unnamed File'),
-            subtitle: Text(file['description'] ?? ''),
-            trailing: const Icon(Icons.download),
-            onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Download not implemented')),
-              );
-            },
-          ),
-        );
-      },
-    );
-  }
-  
-  // Build the tasks tab content for a bucket
-  Widget _buildTasksTab(String bucketId, String bucketName) {
-    final tasks = _bucketTasks[bucketId] ?? [];
-    
-    if (tasks.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.task, size: 48, color: Colors.grey),
-            const SizedBox(height: 16),
-            const Text(
-              'No tasks found',
-              style: TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: () async {
-                try {
-                  final refreshedTasks = await _apiService.getBucketTasks(bucketId);
-                  setState(() {
-                    _bucketTasks[bucketId] = refreshedTasks;
-                  });
-                } catch (e) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Failed to refresh tasks: $e')),
-                  );
-                }
-              },
-              child: const Text('Refresh'),
-            ),
-          ],
-        ),
-      );
-    }
-    
-    return ListView.builder(
-      itemCount: tasks.length,
-      padding: const EdgeInsets.all(8.0),
-      itemBuilder: (context, index) {
-        final task = tasks[index];
-        return Card(
-          elevation: 2,
-          margin: const EdgeInsets.symmetric(vertical: 4),
-          child: ListTile(
-            leading: const Icon(Icons.check_circle_outline),
-            title: Text(task['title'] ?? task['name'] ?? 'Unnamed Task'),
-            subtitle: Text(task['description'] ?? ''),
-            trailing: _getStatusIcon(task['status'] ?? 'pending'),
-            onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('View task details coming soon')),
-              );
-            },
-          ),
-        );
-      },
     );
   }
   
@@ -652,6 +1359,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
     
     switch (status.toLowerCase()) {
       case 'completed':
+      case 'done':
         iconData = Icons.check_circle;
         iconColor = Colors.green;
         break;
@@ -660,12 +1368,23 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
         iconColor = Colors.blue;
         break;
       case 'pending':
-        iconData = Icons.pending;
+      case 'waiting':
+        iconData = Icons.pending_actions;
         iconColor = Colors.orange;
         break;
+      case 'cancelled':
       case 'rejected':
         iconData = Icons.cancel;
         iconColor = Colors.red;
+        break;
+      case 'on hold':
+        iconData = Icons.pause_circle;
+        iconColor = Colors.amber;
+        break;
+      case 'review':
+      case 'in review':
+        iconData = Icons.rate_review;
+        iconColor = Colors.purple;
         break;
       default:
         iconData = Icons.help_outline;
@@ -673,101 +1392,6 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
     }
     
     return Icon(iconData, color: iconColor);
-  }
-
-  // Find the bucket with the matching name or title
-  Map<String, dynamic> _findBucketByName(String tabTitle) {
-    debugPrint('Finding bucket for tab: $tabTitle');
-    
-    // Handle common bucket titles with variations
-    final Map<String, List<String>> commonAliases = {
-      'Architecture': ['Architecture', 'Arch', 'architecture', 'arch'],
-      'Structural Design': ['Structural Design', 'Structural', 'structural', 'structure', 'struct'],
-      'Mechanical': ['Mechanical', 'HVAC', 'MEP', 'mechanical'],
-      'Electrical': ['Electrical', 'Electric', 'electrical', 'Lighting'],
-      'Plumbing': ['Plumbing', 'Water', 'plumbing'],
-      'Project Management': ['Project Management', 'PM', 'Management'],
-      'Bill of Quantity': ['Bill of Quantity', 'BoQ', 'Quantity', 'Quantities'],
-      'Client Section': ['Client Section', 'Client', 'client'],
-      'On Site': ['On Site', 'Site', 'Construction Site', 'on-site'],
-    };
-    
-    // Normalize the tab title
-    final normalizedTabTitle = tabTitle.trim().toLowerCase();
-    
-    // First try: Direct match with name or title
-    try {
-      final bucket = _projectBuckets.firstWhere(
-        (b) => 
-            (b['name'] ?? '').toString().trim().toLowerCase() == normalizedTabTitle ||
-            (b['title'] ?? '').toString().trim().toLowerCase() == normalizedTabTitle,
-        orElse: () => <String, dynamic>{},
-      );
-      
-      if (bucket.isNotEmpty) {
-        debugPrint('Found bucket by direct name/title match: ${bucket['name']}');
-        return bucket;
-      }
-    } catch (e) {
-      debugPrint('Error in direct match: $e');
-    }
-    
-    // Second try: Check against aliases
-    for (var entry in commonAliases.entries) {
-      final standardName = entry.key;
-      final aliases = entry.value;
-      
-      if (aliases.any((alias) => alias.toLowerCase().contains(normalizedTabTitle) || 
-                               normalizedTabTitle.contains(alias.toLowerCase()))) {
-        try {
-          final bucket = _projectBuckets.firstWhere(
-            (b) => 
-                aliases.any((alias) => 
-                    (b['name'] ?? '').toString().toLowerCase().contains(alias.toLowerCase()) ||
-                    (b['title'] ?? '').toString().toLowerCase().contains(alias.toLowerCase()) ||
-                    alias.toLowerCase().contains((b['name'] ?? '').toString().toLowerCase()) ||
-                    alias.toLowerCase().contains((b['title'] ?? '').toString().toLowerCase())
-                ),
-            orElse: () => <String, dynamic>{},
-          );
-          
-          if (bucket.isNotEmpty) {
-            debugPrint('Found bucket by alias match: ${bucket['name']}');
-            return bucket;
-          }
-        } catch (e) {
-          debugPrint('Error in alias match: $e');
-        }
-      }
-    }
-    
-    // Third try: Look for any bucket with similar name
-    try {
-      final bucket = _projectBuckets.firstWhere(
-        (b) => 
-            (b['name'] ?? '').toString().toLowerCase().contains(normalizedTabTitle) ||
-            (b['title'] ?? '').toString().toLowerCase().contains(normalizedTabTitle) ||
-            normalizedTabTitle.contains((b['name'] ?? '').toString().toLowerCase()) ||
-            normalizedTabTitle.contains((b['title'] ?? '').toString().toLowerCase()),
-        orElse: () => <String, dynamic>{},
-      );
-      
-      if (bucket.isNotEmpty) {
-        debugPrint('Found bucket by partial match: ${bucket['name']}');
-        return bucket;
-      }
-    } catch (e) {
-      debugPrint('Error in partial match: $e');
-    }
-    
-    // Last resort: Just take the first bucket or return empty
-    if (_projectBuckets.isNotEmpty) {
-      debugPrint('No matching bucket found, using first available: ${_projectBuckets.first['name']}');
-      return _projectBuckets.first;
-    }
-    
-    debugPrint('No buckets available for tab: $tabTitle');
-    return <String, dynamic>{}; // Return empty map if no bucket found
   }
 
   Color _getStatusColor(String status) {
@@ -824,61 +1448,61 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
   // Set up the tabs for the project details screen
   void _setupTabs() {
     _tabs = [
-      {'title': 'Files', 'icon': Icons.folder},
-      {'title': 'Tasks', 'icon': Icons.task},
+      {
+        'title': 'ARCHITECTURE',
+        'icon': Icons.architecture,
+        'key': 'architecture',
+        'defaultBucketName': 'Architecture Bucket'
+      },
+      {
+        'title': 'STRUCTURAL DESIGN',
+        'icon': Icons.construction,
+        'key': 'structural',
+        'defaultBucketName': 'Structural Design Bucket'
+      },
+      {
+        'title': 'BILL OF QUANTITY',
+        'icon': Icons.calculate,
+        'key': 'boq',
+        'defaultBucketName': 'Bill of Quantity Bucket'
+      },
+      {
+        'title': 'PROJECT MANAGEMENT',
+        'icon': Icons.business_center,
+        'key': 'management',
+        'defaultBucketName': 'Project Management Bucket'
+      },
+      {
+        'title': 'ELECTRO-MECHANICAL DESIGN',
+        'icon': Icons.electrical_services,
+        'key': 'mechanical',
+        'defaultBucketName': 'Electro-Mechanical Design Bucket'
+      },
+      {
+        'title': 'ON SITE',
+        'icon': Icons.location_on,
+        'key': 'onsite',
+        'defaultBucketName': 'On Site Bucket'
+      },
+      {
+        'title': 'CLIENT SECTION',
+        'icon': Icons.people,
+        'key': 'client',
+        'defaultBucketName': 'Client Section Bucket'
+      },
     ];
+    
+    debugPrint('Set up ${_tabs.length} tabs');
     _tabController = TabController(length: _tabs.length, vsync: this);
-  }
-
-  // Load project data
-  Future<void> _loadProjectData() async {
-    try {
-      setState(() {
-        _isLoading = true;
-        _errorMessage = '';
-      });
-
-      // If project details were passed, use them immediately
-      if (widget.projectDetails != null && widget.projectDetails!.isNotEmpty) {
-        _projectData = Map<String, dynamic>.from(widget.projectDetails!);
-      } else {
-        // Otherwise load from API
-        final projects = await _apiService.getProjects();
-        
-        // Convert both IDs to string for comparison
-        final projectIdString = widget.projectId.toString();
-        final project = projects.firstWhere(
-          (p) => p['id'].toString() == projectIdString || p['guid'].toString() == projectIdString,
-          orElse: () => <String, dynamic>{},
-        );
-        
-        if (project.isNotEmpty) {
-          _projectData = project;
-        } else {
-          throw Exception('Project not found');
-        }
-      }
-      
-      setState(() {
-        _isLoading = false;
-      });
-      
-      // After loading project data, load the buckets
-      await _loadProjectBuckets();
-    } catch (e) {
-      debugPrint('Error loading project data: $e');
-      setState(() {
-        _errorMessage = 'Failed to load project data: $e';
-        _isLoading = false;
-      });
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
-      appBar: const AppHeader(),
+      appBar: AppBar(
+        title: Text(widget.projectName),
+      ),
       endDrawer: const AppDrawer(),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -896,14 +1520,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                       ),
                       const SizedBox(height: 16),
                       ElevatedButton(
-                        onPressed: () {
-                          setState(() {
-                            _isLoading = true;
-                            _errorMessage = '';
-                          });
-                          _loadProjectData();
-                          _loadProjectBuckets();
-                        },
+                        onPressed: _loadProjectData,
                         child: const Text('Retry'),
                       ),
                     ],
@@ -914,86 +1531,42 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                     // Project Header with back button
                     _buildProjectHeader(),
                     
-                    // Project Info Card
-                    _buildProjectInfoCard(),
+                    // Horizontal Menu
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.grey[100],
+                        border: Border(
+                          bottom: BorderSide(
+                            color: Colors.grey[300]!,
+                            width: 1,
+                          ),
+                        ),
+                      ),
+                      child: TabBar(
+                        controller: _tabController,
+                        isScrollable: true,
+                        labelColor: const Color(0xFF1976D2),
+                        unselectedLabelColor: Colors.grey,
+                        indicatorColor: const Color(0xFF1976D2),
+                        tabs: _tabs.map((tab) => Tab(
+                          icon: Icon(tab['icon'] as IconData),
+                          text: tab['title'] as String,
+                        )).toList(),
+                      ),
+                    ),
                     
-                    // Tabs and Content
-                    _buildTabsAndContent(),
+                    // Tab Content
+                    Expanded(
+                      child: TabBarView(
+                        controller: _tabController,
+                        children: _tabs.map((tab) => _buildTabContent(tab['title'] as String)).toList(),
+                      ),
+                    ),
                   ],
                 ),
     );
   }
 
-  Widget _buildProjectInfoCard() {
-    return Card(
-      margin: const EdgeInsets.all(8.0),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              _projectData['description'] ?? 'No description available',
-              style: const TextStyle(fontSize: 14),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Status: ${_projectData['status'] ?? 'Unknown'}',
-                  style: TextStyle(
-                    color: _getStatusColor(_projectData['status'] ?? ''),
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                Text(
-                  'Location: ${_projectData['location'] ?? 'Not specified'}',
-                  style: const TextStyle(color: Colors.grey),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTabsAndContent() {
-    if (_tabs.isEmpty) {
-      return const Expanded(
-        child: Center(
-          child: Text(
-            'No buckets found for this project',
-            style: TextStyle(color: Colors.grey),
-          ),
-        ),
-      );
-    }
-
-    return Expanded(
-      child: Column(
-        children: [
-          TabBar(
-            controller: _tabController,
-            isScrollable: true,
-            tabs: _tabs.map((tab) => Tab(
-              icon: Icon(tab['icon'] as IconData),
-              text: tab['title'] as String,
-            )).toList(),
-          ),
-          Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: _tabs.map((tab) => _buildTabContent(tab['title'] as String)).toList(),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // Build project header with back button and edit button
   Widget _buildProjectHeader() {
     return Container(
       color: const Color(0xFF1976D2),
@@ -1006,7 +1579,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
           ),
           Expanded(
             child: Text(
-              _projectData['name'] ?? 'Unknown Project',
+              _projectData['name'] ?? widget.projectName,
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 18.0,
@@ -1015,12 +1588,134 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
               overflow: TextOverflow.ellipsis,
             ),
           ),
-          IconButton(
-            icon: const Icon(Icons.edit, color: Colors.white),
-            onPressed: _navigateToEditProject,
-          ),
         ],
       ),
     );
+  }
+
+  String? _getSafeString(dynamic value) {
+    if (value is String) {
+      return value;
+    } else if (value is num) {
+      return value.toString();
+    } else if (value is bool) {
+      return value.toString();
+    } else if (value is Map<String, dynamic>) {
+      return jsonEncode(value);
+    } else if (value is List<dynamic>) {
+      return jsonEncode(value);
+    } else {
+      return null;
+    }
+  }
+
+  List<Map<String, dynamic>> _sortAndFilterTasks(List<Map<String, dynamic>> tasks, String bucketGuid) {
+    // Create a copy of the tasks list to avoid modifying the original
+    final List<Map<String, dynamic>> filteredTasks = List.from(tasks);
+    
+    // Apply filters
+    var result = filteredTasks.where((task) {
+      final String taskTitle = _getSafeString(task['title']) ?? _getSafeString(task['name']) ?? 'Unnamed Task';
+      final String taskDesc = _getSafeString(task['description']) ?? _getSafeString(task['desc']) ?? '';
+      final String taskStatus = _getSafeString(task['status']) ?? 'pending';
+      final String taskAssignee = _getSafeString(task['assignedTo']) ?? _getSafeString(task['assignee']) ?? 'Unassigned';
+      final String taskPriority = _getSafeString(task['priority']) ?? 'None';
+      
+      // Apply status filter
+      if (_status != null && _status != 'all') {
+        final statusFilter = _status?.toLowerCase() ?? '';
+        final taskStatusLower = taskStatus.toLowerCase();
+        
+        if (statusFilter == 'pending' && !taskStatusLower.contains('pending')) {
+          return false;
+        } else if (statusFilter == 'in_progress' && !taskStatusLower.contains('progress')) {
+          return false;
+        } else if (statusFilter == 'completed' && !taskStatusLower.contains('done') && !taskStatusLower.contains('completed')) {
+          return false;
+        }
+      }
+      
+      // Apply assignee filter
+      if (_assignee != null && _assignee != 'all') {
+        final assigneeFilter = _assignee?.toLowerCase() ?? '';
+        final taskAssigneeLower = taskAssignee.toLowerCase();
+        
+        if (!taskAssigneeLower.contains(assigneeFilter)) {
+          return false;
+        }
+      }
+      
+      // Apply priority filter
+      if (_priority != null && _priority != 'all') {
+        final priorityFilter = _priority?.toLowerCase() ?? '';
+        final taskPriorityLower = taskPriority.toLowerCase();
+        
+        if (priorityFilter != taskPriorityLower && 
+            !(priorityFilter == 'none' && taskPriorityLower.isEmpty)) {
+          return false;
+        }
+      }
+      
+      // Apply search filter
+      if (_searchController.text.isNotEmpty) {
+        final searchTerm = _searchController.text.toLowerCase();
+        final taskTitleLower = taskTitle.toLowerCase();
+        final taskDescLower = taskDesc.toLowerCase();
+        
+        if (!taskTitleLower.contains(searchTerm) && !taskDescLower.contains(searchTerm)) {
+          return false;
+        }
+      }
+      
+      return true;
+    }).toList();
+    
+    // Apply sorting if enabled
+    if (_sortBy != null && _sortBy != 'none') {
+      result.sort((a, b) {
+        final aTitle = _getSafeString(a['title']) ?? _getSafeString(a['name']) ?? '';
+        final bTitle = _getSafeString(b['title']) ?? _getSafeString(b['name']) ?? '';
+        
+        final aStatus = _getSafeString(a['status']) ?? '';
+        final bStatus = _getSafeString(b['status']) ?? '';
+        
+        final aAssignee = _getSafeString(a['assignedTo']) ?? _getSafeString(a['assignee']) ?? '';
+        final bAssignee = _getSafeString(b['assignedTo']) ?? _getSafeString(b['assignee']) ?? '';
+        
+        final aPriority = _getSafeString(a['priority']) ?? '';
+        final bPriority = _getSafeString(b['priority']) ?? '';
+        
+        switch (_sortBy) {
+          case 'title':
+            return aTitle.compareTo(bTitle);
+          case 'status':
+            return aStatus.compareTo(bStatus);
+          case 'assignee':
+            return aAssignee.compareTo(bAssignee);
+          case 'priority':
+            // Custom priority sorting (High > Medium > Low > None)
+            final aPriorityValue = _getPriorityValue(aPriority);
+            final bPriorityValue = _getPriorityValue(bPriority);
+            return bPriorityValue.compareTo(aPriorityValue); // Note: reversed to put high priority first
+          default:
+            return 0;
+        }
+      });
+    }
+    
+    return result;
+  }
+  
+  int _getPriorityValue(String priority) {
+    switch (priority.toLowerCase()) {
+      case 'high':
+        return 3;
+      case 'medium':
+        return 2;
+      case 'low':
+        return 1;
+      default:
+        return 0;
+    }
   }
 } 
