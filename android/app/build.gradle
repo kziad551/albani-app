@@ -6,8 +6,12 @@ plugins {
 }
 
 android {
-    namespace = "com.example.albani_app"
-    compileSdk = flutter.compileSdkVersion
+    namespace "com.example.albani_app"
+    compileSdkVersion flutter.compileSdkVersion
+    // If compileSdkVersion is not set by the Flutter framework, set it to at least 33
+    if (flutter.compileSdkVersion < 33) {
+        compileSdkVersion 33
+    }
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

@@ -37,4 +37,14 @@ class AppConfig {
   static const int mockBucketsCount = 5;        // Number of mock buckets per project
   static const int mockFilesCount = 3;          // Number of mock files per bucket
   static const int mockTasksCount = 2;          // Number of mock tasks per bucket
+
+  // Storage keys
+  static const String tokenKey = 'accessToken';
+  static const String refreshTokenKey = 'refreshToken';
+  static const String tokenExpirationKey = 'tokenExpiration';
+  static const String userIdKey = 'userId';
+  static const String userNameKey = 'userName';
+  
+  // Debug flags
+  static const bool mockApiCalls = false;
 } 

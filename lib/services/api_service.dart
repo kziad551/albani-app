@@ -1243,37 +1243,88 @@ class ApiService {
         throw Exception('No internet connection');
       }
       
-      debugPrint('Deleting task: $taskId');
+      // Ensure taskId is a string
+      final String taskIdStr = taskId.toString();
       
-      // Try first implementation
-      try {
-        await delete('api/BucketTasks/$taskId');
-        debugPrint('Task deleted successfully');
-        return;
-      } catch (e) {
-        debugPrint('First task deletion attempt failed: $e, trying alternative method');
-      }
+      debugPrint('Deleting task with ID: $taskIdStr');
       
-      // Try alternative endpoint
-      try {
-        final response = await _dio.delete(
-          '/api/BucketTasks/DeleteTask',
-          queryParameters: {'taskId': taskId},
-          options: Options(
-            followRedirects: true,
-            validateStatus: (status) => status! < 500,
-          ),
-        );
-        
-        if (response.statusCode! >= 200 && response.statusCode! < 300) {
-          debugPrint('Task deleted successfully via alternative method');
-          return;
+      // Create request exactly like the website does
+      final data = jsonEncode({'guid': taskIdStr});
+      debugPrint('Request payload: $data');
+      
+      // Get the token directly for debugging
+      final token = await storage.read(key: 'accessToken');
+      debugPrint('Using token: ${token?.substring(0, min(10, token?.length ?? 0))}...');
+      
+      // Maximum number of retries
+      const int maxRetries = 2;
+      int retryCount = 0;
+      Exception? lastException;
+      
+      while (retryCount <= maxRetries) {
+        try {
+          // Use raw http client instead of Dio for most direct approach
+          final response = await http.delete(
+            Uri.parse('$_baseUrl/api/BucketTasks/DeleteTask'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: data,
+          );
+          
+          debugPrint('Delete task response status: ${response.statusCode}');
+          debugPrint('Delete task response body: ${response.body}');
+          
+          if (response.statusCode >= 200 && response.statusCode < 300) {
+            debugPrint('Task successfully deleted');
+            return;
+          }
+          
+          // If server returned an error, try alternative approach with Dio
+          if (retryCount < maxRetries) {
+            debugPrint('Server returned ${response.statusCode}, trying alternative approach');
+            
+            // Try with Dio client
+            final dioResponse = await _dio.delete(
+              '/api/BucketTasks/DeleteTask',
+              data: {'guid': taskIdStr},
+              options: Options(
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Accept': 'application/json',
+                },
+                followRedirects: true,
+                validateStatus: (status) => true, // Accept any status code for logging
+              ),
+            );
+            
+            debugPrint('Alternative delete response: ${dioResponse.statusCode}');
+            
+            if (dioResponse.statusCode! >= 200 && dioResponse.statusCode! < 300) {
+              debugPrint('Task successfully deleted using alternative method');
+              return;
+            }
+          }
+          
+          lastException = Exception('Failed to delete task: Server returned ${response.statusCode}');
+        } catch (e) {
+          debugPrint('Error during delete attempt ${retryCount + 1}: $e');
+          lastException = Exception('Failed to delete task: $e');
         }
-      } catch (e) {
-        debugPrint('Alternative task deletion also failed: $e');
+        
+        // Increment retry count and delay before trying again
+        retryCount++;
+        if (retryCount <= maxRetries) {
+          final delay = Duration(milliseconds: 500 * retryCount);
+          debugPrint('Retrying in ${delay.inMilliseconds}ms...');
+          await Future.delayed(delay);
+        }
       }
       
-      throw Exception('Failed to delete task: All methods failed');
+      // If we reached here, all attempts failed
+      throw lastException ?? Exception('Failed to delete task after $maxRetries retries');
     } catch (e) {
       debugPrint('Error deleting task: $e');
       throw Exception('Failed to delete task: $e');

@@ -354,29 +354,59 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
   }
 
   Future<void> _loadFilesAndTasksForBucket(String bucketGuid) async {
-    try {
-      debugPrint('Loading files and tasks for bucket GUID: $bucketGuid');
-      
-      // Load files and tasks in parallel
-      final filesAndTasks = await Future.wait([
-        _apiService.getBucketFiles(bucketGuid),
-        _apiService.getBucketTasks(bucketGuid),
-      ]);
-      
-      final files = filesAndTasks[0];
-      final tasks = filesAndTasks[1];
-      
-      debugPrint('Loaded ${files.length} files and ${tasks.length} tasks for bucket $bucketGuid');
-      
-      if (!mounted) return;
-      
-      setState(() {
-        _bucketFiles[bucketGuid] = files;
-        _bucketTasks[bucketGuid] = tasks;
-      });
-    } catch (e) {
-      debugPrint('Error loading files and tasks for bucket $bucketGuid: $e');
-      // Don't throw, just log the error and continue
+    if (bucketGuid.isEmpty) {
+      debugPrint('Warning: Empty bucketGuid provided to _loadFilesAndTasksForBucket');
+      return;
+    }
+    
+    debugPrint('Loading files and tasks for bucket GUID: $bucketGuid');
+    
+    // Track retries
+    int retries = 0;
+    const maxRetries = 2;
+    
+    while (retries <= maxRetries) {
+      try {
+        // Load files and tasks in parallel
+        final filesAndTasks = await Future.wait([
+          _apiService.getBucketFiles(bucketGuid),
+          _apiService.getBucketTasks(bucketGuid),
+        ]);
+        
+        final files = filesAndTasks[0];
+        final tasks = filesAndTasks[1];
+        
+        debugPrint('Loaded ${files.length} files and ${tasks.length} tasks for bucket $bucketGuid');
+        
+        if (!mounted) return;
+        
+        setState(() {
+          _bucketFiles[bucketGuid] = files;
+          _bucketTasks[bucketGuid] = tasks;
+        });
+        
+        // Successfully loaded data, exit the retry loop
+        break;
+      } catch (e) {
+        retries++;
+        debugPrint('Error loading files and tasks for bucket $bucketGuid (attempt $retries/$maxRetries): $e');
+        
+        if (retries <= maxRetries) {
+          // Wait before retrying
+          await Future.delayed(Duration(milliseconds: 500 * retries));
+        } else {
+          // Max retries reached, just continue without throwing
+          debugPrint('Max retries reached for bucket $bucketGuid');
+          
+          if (!mounted) return;
+          
+          // If we couldn't load data, at least initialize empty lists
+          setState(() {
+            _bucketFiles[bucketGuid] = _bucketFiles[bucketGuid] ?? [];
+            _bucketTasks[bucketGuid] = _bucketTasks[bucketGuid] ?? [];
+          });
+        }
+      }
     }
   }
 
@@ -580,19 +610,6 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Bucket Title
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Text(
-              bucket['name'] ?? tabTitle,
-              style: const TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF1976D2),
-              ),
-            ),
-          ),
-
           // Files Section
           Container(
             padding: const EdgeInsets.all(16.0),
@@ -609,8 +626,9 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    IconButton(
+                    TextButton.icon(
                       icon: const Icon(Icons.upload_file),
+                      label: const Text('UPLOAD'),
                       onPressed: () async {
                         try {
                           // Show file picker
@@ -1023,7 +1041,6 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                               IconButton(
                                 icon: const Icon(Icons.edit),
                                 onPressed: () {
-                                  // Navigate to edit task screen
                                   Navigator.push(
                                     context,
                                     MaterialPageRoute(
@@ -1096,29 +1113,84 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                                                   throw Exception('Task ID not found');
                                                 }
                                                 
-                                                // Delete the task
-                                                await _apiService.deleteTask(taskId.toString());
-                                                
-                                                // Refresh the bucket
-                                                await _loadFilesAndTasksForBucket(bucketGuid);
-                                                
+                                                // Optimistically remove the task from local list first
                                                 if (mounted) {
-                                                  // Check if Navigator can be safely used
-                                                  if (Navigator.of(context).canPop()) {
-                                                    Navigator.pop(context); // Close loading dialog
+                                                  setState(() {
+                                                    _bucketTasks[bucketGuid]?.removeWhere((t) => 
+                                                      t['id'] == taskId || t['guid'] == taskId);
+                                                  });
+                                                }
+                                                
+                                                // Delete the task - Wait for longer timeout
+                                                try {
+                                                  await _apiService.deleteTask(taskId.toString())
+                                                    .timeout(const Duration(seconds: 15));
+                                                  
+                                                  // Add a short delay to ensure server sync
+                                                  await Future.delayed(const Duration(seconds: 1));
+                                                  
+                                                  // Get task data for the bucket to sync with server
+                                                  if (mounted) {
+                                                    try {
+                                                      final fileBucketGuid = task['bucketGuid'] ?? task['bucketId'] ?? bucketGuid;
+                                                      await _loadFilesAndTasksForBucket(fileBucketGuid);
+                                                      debugPrint('Successfully synced with server after task deletion');
+                                                    } catch (syncError) {
+                                                      // If sync fails, it's ok, we've already removed the task locally
+                                                      debugPrint('Failed to sync with server after deletion: $syncError');
+                                                    }
+                                                    
+                                                    // Check if Navigator can be safely used
+                                                    if (Navigator.of(context).canPop()) {
+                                                      Navigator.pop(context); // Close loading dialog
+                                                    }
+                                                    
+                                                    ScaffoldMessenger.of(context).showSnackBar(
+                                                      SnackBar(
+                                                        content: Text('Task "$taskTitle" deleted'),
+                                                        backgroundColor: Colors.green,
+                                                      ),
+                                                    );
                                                   }
-                                                  ScaffoldMessenger.of(context).showSnackBar(
-                                                    SnackBar(content: Text('Task "$taskTitle" deleted')),
-                                                  );
+                                                } catch (deleteError) {
+                                                  debugPrint('Task deletion API error: $deleteError');
+                                                  
+                                                  // Add the task back to the list if API failed
+                                                  if (mounted) {
+                                                    setState(() {
+                                                      if (_bucketTasks.containsKey(bucketGuid)) {
+                                                        if (_bucketTasks[bucketGuid]?.any((t) => 
+                                                          t['id'] == taskId || t['guid'] == taskId) == false) {
+                                                          _bucketTasks[bucketGuid]?.add(task);
+                                                        }
+                                                      }
+                                                    });
+                                                    
+                                                    // Close loading dialog if open
+                                                    if (Navigator.of(context).canPop()) {
+                                                      Navigator.pop(context);
+                                                    }
+                                                    
+                                                    ScaffoldMessenger.of(context).showSnackBar(
+                                                      SnackBar(
+                                                        content: Text('Failed to delete task: $deleteError'),
+                                                        backgroundColor: Colors.red,
+                                                      ),
+                                                    );
+                                                  }
                                                 }
                                               } catch (e) {
+                                                debugPrint('General error during task deletion: $e');
                                                 if (mounted) {
                                                   // Check if Navigator can be safely used
                                                   if (Navigator.of(context).canPop()) {
                                                     Navigator.pop(context); // Close loading dialog
                                                   }
                                                   ScaffoldMessenger.of(context).showSnackBar(
-                                                    SnackBar(content: Text('Failed to delete task: $e')),
+                                                    SnackBar(
+                                                      content: Text('Failed to delete task: $e'),
+                                                      backgroundColor: Colors.red,
+                                                    ),
                                                   );
                                                 }
                                               }
@@ -1501,9 +1573,25 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
-        title: Text(widget.projectName),
+        backgroundColor: Color(0xFF1976D2),
+        elevation: 0,
+        // Use centered logo instead of text title
+        centerTitle: true,
+        title: Image.asset(
+          'assets/images/albanilogo.png',
+          height: 40,
+          fit: BoxFit.contain,
+          color: Colors.white,
+        ),
+        // Keep only the back button, remove the menu
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          onPressed: () => Navigator.pop(context),
+        ),
+        // Remove the actions/menu button as it's not in the image
+        actions: [],
       ),
-      endDrawer: const AppDrawer(),
+      endDrawer: null, // Remove the drawer
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _errorMessage.isNotEmpty
@@ -1528,10 +1616,23 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                 )
               : Column(
                   children: [
-                    // Project Header with back button
-                    _buildProjectHeader(),
+                    // Project name in blue header
+                    Container(
+                      color: const Color(0xFF1976D2),
+                      padding: const EdgeInsets.symmetric(vertical: 12.0),
+                      width: double.infinity,
+                      child: Text(
+                        _projectData['name'] ?? widget.projectName,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18.0,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
                     
-                    // Horizontal Menu
+                    // Tab bar
                     Container(
                       decoration: BoxDecoration(
                         color: Colors.grey[100],
@@ -1555,7 +1656,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                       ),
                     ),
                     
-                    // Tab Content
+                    // Tab Content - directly use TabBarView without the extra titles
                     Expanded(
                       child: TabBarView(
                         controller: _tabController,
@@ -1564,32 +1665,6 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                     ),
                   ],
                 ),
-    );
-  }
-
-  Widget _buildProjectHeader() {
-    return Container(
-      color: const Color(0xFF1976D2),
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-      child: Row(
-        children: [
-          IconButton(
-            icon: const Icon(Icons.arrow_back, color: Colors.white),
-            onPressed: () => Navigator.pop(context),
-          ),
-          Expanded(
-            child: Text(
-              _projectData['name'] ?? widget.projectName,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 18.0,
-                fontWeight: FontWeight.bold,
-              ),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
     );
   }
 
