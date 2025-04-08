@@ -3,7 +3,7 @@ import '../widgets/app_header.dart';
 import '../widgets/app_drawer.dart';
 import 'add_project_screen.dart';
 import 'project_details_screen.dart';
-import 'edit_project_screen.dart';
+import 'project_settings_screen.dart';
 import '../services/api_service.dart';
 import '../config/app_config.dart';
 import '../models/project.dart';
@@ -414,171 +414,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> with WidgetsBindingObse
                 
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 8),
-                  child: Card(
-                    color: const Color(0xFF1E293E),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  project['name'] ?? project['title'] ?? 'Untitled Project',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                              PopupMenuButton<String>(
-                                icon: const Icon(
-                                  Icons.more_vert,
-                                  color: Colors.white,
-                                  size: 20,
-                                ),
-                                onSelected: (value) {
-                                  final projectId = project['id'] ?? 0;
-                                  final projectName = project['name'] ?? project['title'] ?? 'Untitled Project';
-                                  
-                                  if (value == 'view') {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) => ProjectDetailsScreen(
-                                          projectId: project['id'] ?? project['guid'] ?? "0",
-                                          projectDetails: project,
-                                          projectName: projectName,
-                                        ),
-                                      ),
-                                    ).then((_) => setState(() => _needsRefresh = true));
-                                  } else if (value == 'edit') {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) => EditProjectScreen(
-                                          projectId: projectId,
-                                          title: project['name'] ?? project['title'] ?? '',
-                                          description: project['description'] ?? '',
-                                          location: project['location'] ?? '',
-                                          status: project['status'] ?? 'In Progress',
-                                        ),
-                                      ),
-                                    ).then((_) => setState(() => _needsRefresh = true));
-                                  }
-                                },
-                                itemBuilder: (BuildContext context) => [
-                                  const PopupMenuItem(
-                                    value: 'view',
-                                    child: Row(
-                                      children: [
-                                        Icon(Icons.visibility, size: 18),
-                                        SizedBox(width: 8),
-                                        Text('View'),
-                                      ],
-                                    ),
-                                  ),
-                                  const PopupMenuItem(
-                                    value: 'edit',
-                                    child: Row(
-                                      children: [
-                                        Icon(Icons.edit, size: 18),
-                                        SizedBox(width: 8),
-                                        Text('Edit'),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          // Status tag
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: _getStatusColor(project['status'] ?? 'In Progress'),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              project['status'] ?? 'In Progress',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          // Location
-                          if (project['location'] != null && project['location'].toString().isNotEmpty)
-                            Row(
-                              children: [
-                                const Icon(Icons.location_on, color: Colors.white, size: 12),
-                                const SizedBox(width: 4),
-                                Expanded(
-                                  child: Text(
-                                    project['location'].toString(),
-                                    style: TextStyle(
-                                      color: Colors.white.withAlpha(200),
-                                      fontSize: 12,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          const SizedBox(height: 8),
-                          // Manager
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Row(
-                                children: [
-                                  const Icon(Icons.person, color: Colors.white, size: 12),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    "${project['managedBy'] ?? 'Oussama Tahmaz'}",
-                                    style: TextStyle(
-                                      color: Colors.white.withAlpha(200),
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              // View details link
-                              TextButton(
-                                onPressed: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => ProjectDetailsScreen(
-                                        projectId: project['id'] ?? project['guid'] ?? "0",
-                                        projectName: project['name'] ?? project['title'] ?? 'Untitled Project',
-                                        projectDetails: project,
-                                      ),
-                                    ),
-                                  ).then((_) => setState(() => _needsRefresh = true));
-                                },
-                                style: TextButton.styleFrom(
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
-                                  minimumSize: Size.zero,
-                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                ),
-                                child: const Text('EXPAND', style: TextStyle(fontSize: 12)),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                  child: _buildProjectCard(project),
                 );
               },
             ),
@@ -674,60 +510,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> with WidgetsBindingObse
           groupWidgets.add(
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Card(
-                color: const Color(0xFF1E293E),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: ListTile(
-                  title: Text(
-                    (project['name'] ?? project['title'] ?? 'Untitled Project').toString(),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold
-                    ),
-                  ),
-                  subtitle: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const SizedBox(height: 4),
-                      if (groupField != 'status') 
-                        Text(
-                          'Status: ${project['status'] ?? 'Unknown'}',
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                      if (groupField != 'location') 
-                        Text(
-                          'Location: ${project['location'] ?? 'N/A'}',
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                      if (groupField != 'managedBy' && project['managedBy'] != null) 
-                        Text(
-                          'Manager: ${project['managedBy']}',
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                    ],
-                  ),
-                  trailing: const Icon(Icons.arrow_forward_ios, color: Colors.white, size: 16),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  onTap: () async {
-                    await Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => ProjectDetailsScreen(
-                          projectId: project['id'] ?? project['guid'] ?? "0",
-                          projectName: project['name'] ?? project['title'] ?? 'Untitled Project',
-                          projectDetails: project,
-                        ),
-                      ),
-                    );
-                    
-                    setState(() {
-                      _needsRefresh = true;
-                    });
-                  },
-                ),
-              ),
+              child: _buildProjectCard(project),
             ),
           );
         }
@@ -739,6 +522,134 @@ class _ProjectsScreenState extends State<ProjectsScreen> with WidgetsBindingObse
       child: ListView(
         padding: const EdgeInsets.all(8.0),
         children: groupWidgets,
+      ),
+    );
+  }
+
+  Widget _buildProjectCard(Map<String, dynamic> project) {
+    return Card(
+      color: const Color(0xFF1E293E),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    project['name'] ?? project['title'] ?? 'Untitled Project',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(
+                    Icons.settings,
+                    color: Colors.white,
+                    size: 20,
+                  ),
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => ProjectSettingsScreen(
+                          projectId: project['id'] ?? project['guid'],
+                          projectName: project['name'] ?? project['title'] ?? 'Untitled Project',
+                          projectDetails: project,
+                        ),
+                      ),
+                    ).then((_) => setState(() => _needsRefresh = true));
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            // Status tag
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: _getStatusColor(project['status'] ?? 'In Progress'),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                project['status'] ?? 'In Progress',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            // Location
+            if (project['location'] != null && project['location'].toString().isNotEmpty)
+              Row(
+                children: [
+                  const Icon(Icons.location_on, color: Colors.white, size: 12),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      project['location'].toString(),
+                      style: TextStyle(
+                        color: Colors.white.withAlpha(200),
+                        fontSize: 12,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            const SizedBox(height: 8),
+            // Manager
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.person, color: Colors.white, size: 12),
+                    const SizedBox(width: 4),
+                    Text(
+                      "${project['managedBy'] ?? 'Oussama Tahmaz'}",
+                      style: TextStyle(
+                        color: Colors.white.withAlpha(200),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+                // View details link
+                TextButton(
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => ProjectDetailsScreen(
+                          projectId: project['id'] ?? project['guid'] ?? "0",
+                          projectName: project['name'] ?? project['title'] ?? 'Untitled Project',
+                          projectDetails: project,
+                        ),
+                      ),
+                    ).then((_) => setState(() => _needsRefresh = true));
+                  },
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text('EXPAND', style: TextStyle(fontSize: 12)),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

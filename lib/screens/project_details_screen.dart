@@ -1572,26 +1572,8 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
-      appBar: AppBar(
-        backgroundColor: Color(0xFF1976D2),
-        elevation: 0,
-        // Use centered logo instead of text title
-        centerTitle: true,
-        title: Image.asset(
-          'assets/images/albanilogo.png',
-          height: 40,
-          fit: BoxFit.contain,
-          color: Colors.white,
-        ),
-        // Keep only the back button, remove the menu
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () => Navigator.pop(context),
-        ),
-        // Remove the actions/menu button as it's not in the image
-        actions: [],
-      ),
-      endDrawer: null, // Remove the drawer
+      appBar: const AppHeader(showBackButton: true),
+      endDrawer: const AppDrawer(),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _errorMessage.isNotEmpty
