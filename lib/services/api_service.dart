@@ -1,16 +1,18 @@
 import 'dart:convert';
 import 'dart:math';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../config/app_config.dart';
 import 'auth_service.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:dio/dio.dart' show Dio, InterceptorsWrapper, DioException, Options;
-import 'package:dio/dio.dart' show FormData, MultipartFile;
+import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 
 class ApiService {
   final String _baseUrl = AppConfig.apiBaseUrl;
+  final String _ipUrl = AppConfig.apiIpUrl; // Add fallback IP URL
   final Dio _dio = Dio();
   final AuthService _authService = AuthService();
   
@@ -24,35 +26,45 @@ class ApiService {
       'Accept': 'application/json',
     };
     
-    _dio.interceptors.add(InterceptorsWrapper(
-      onRequest: (options, handler) async {
-        // Get token from secure storage directly
-        final token = await storage.read(key: 'accessToken');
-        if (token != null && token.isNotEmpty) {
-          options.headers['Authorization'] = 'Bearer $token';
-          debugPrint('Adding auth token to request: ${options.uri}');
-        } else {
-          debugPrint('No auth token available for request: ${options.uri}');
-        }
-        return handler.next(options);
-      },
-      onError: (error, handler) async {
-        if (error.response?.statusCode == 401) {
-          debugPrint('Received 401 error, checking token validity');
-          final isValid = await _authService.hasValidToken();
-          if (!isValid) {
-            await _handleTokenExpiration();
-            return handler.reject(
-              DioException(
-                requestOptions: error.requestOptions,
-                error: 'Token expired - please log in again',
-              ),
-            );
-          }
-        }
-        return handler.next(error);
-      },
-    ));
+    // Configure timeouts
+    _dio.options.connectTimeout = Duration(seconds: AppConfig.connectionTimeout);
+    _dio.options.receiveTimeout = Duration(seconds: AppConfig.connectionTimeout);
+    _dio.options.sendTimeout = Duration(seconds: AppConfig.connectionTimeout);
+    
+    // Configure SSL certificate handling for Android
+    if (_dio.httpClientAdapter is IOHttpClientAdapter) {
+      (_dio.httpClientAdapter as IOHttpClientAdapter).onHttpClientCreate = (client) {
+        client.badCertificateCallback = (cert, host, port) => true;
+        return client;
+      };
+    }
+    
+    // Add logging interceptor
+    _dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) async {
+          debugPrint('\n=== API Request Details ===');
+          debugPrint('URL: ${options.uri}');
+          debugPrint('Method: ${options.method}');
+          debugPrint('Headers: ${options.headers}');
+          return handler.next(options);
+        },
+        onResponse: (response, handler) async {
+          debugPrint('\n=== API Response Details ===');
+          debugPrint('Status Code: ${response.statusCode}');
+          debugPrint('Headers: ${response.headers}');
+          return handler.next(response);
+        },
+        onError: (DioException e, handler) async {
+          debugPrint('\n=== API Error Details ===');
+          debugPrint('Error Type: ${e.type}');
+          debugPrint('Error Message: ${e.message}');
+          debugPrint('Status Code: ${e.response?.statusCode}');
+          debugPrint('Response Data: ${e.response?.data}');
+          return handler.next(e);
+        },
+      ),
+    );
   }
   
   final storage = const FlutterSecureStorage();
@@ -89,25 +101,52 @@ class ApiService {
         debugPrint('No token available to validate');
         return false;
       }
-      
-      // Try to validate with the Employees endpoint
+
+      // Try domain-based validation first
       try {
-        final response = await get('api/Employees/validate');
-        debugPrint('Token validation response: $response');
-        return true; // If we got a response without exception, token is valid
+        debugPrint('Attempting token validation with domain URL');
+        final response = await _dio.get(
+          '$_baseUrl/api/Employees/validate',
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/json',
+            },
+            validateStatus: (status) => true,
+          ),
+        );
+        if (response.statusCode == 200) {
+          debugPrint('Token validated successfully with domain URL');
+          return true;
+        }
       } catch (e) {
-        debugPrint('First token validation endpoint failed: $e');
+        debugPrint('Domain-based validation failed: $e');
       }
-      
-      // Try with auth endpoint as fallback
+
+      // If domain validation fails, try IP-based validation
       try {
-        final response = await get('api/auth/validate');
-        debugPrint('Token validation response: $response');
-        return true;
+        debugPrint('Attempting token validation with IP URL');
+        final response = await _dio.get(
+          '$_ipUrl/api/Employees/validate',
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/json',
+              'Host': 'albani.smartsoft-me.com',
+            },
+            validateStatus: (status) => true,
+          ),
+        );
+        if (response.statusCode == 200) {
+          debugPrint('Token validated successfully with IP URL');
+          return true;
+        }
       } catch (e) {
-        debugPrint('Token validation error: $e');
-        return false;
+        debugPrint('IP-based validation failed: $e');
       }
+
+      debugPrint('All token validation attempts failed');
+      return false;
     } catch (e) {
       debugPrint('Error validating token: $e');
       return false;
@@ -127,19 +166,18 @@ class ApiService {
       }
       return {'success': true};
     } else if (response.statusCode == 401) {
-      // Token expired or invalid - handle token refresh or clear storage
       debugPrint('Received 401 Unauthorized response');
       
       // First try to validate the token
-      final isValid = await _authService.hasValidToken();
+      final isValid = await validateToken();
       if (!isValid) {
-        // If token is invalid, handle expiration
+        debugPrint('Token validation failed, logging out');
         await _handleTokenExpiration();
         throw Exception('Unauthorized: Please log in again');
+      } else {
+        debugPrint('Token is valid despite 401, retrying operation');
+        throw Exception('Please retry the operation');
       }
-      
-      // If token is valid but request failed, throw error
-      throw Exception('Unauthorized: Please try again');
     } else {
       throw Exception('API Error: ${response.statusCode} - ${response.body}');
     }
@@ -312,39 +350,90 @@ class ApiService {
   // API methods for projects
   Future<List<Map<String, dynamic>>> getProjects() async {
     try {
-      // First check internet connection
-      final hasInternet = await hasInternetConnection();
-      if (!hasInternet) {
+      if (!await hasInternetConnection()) {
         throw Exception('No internet connection');
-      }
-      
-      // Validate token before making request
-      final isValid = await _authService.hasValidToken();
-      if (!isValid) {
-        throw Exception('Unauthorized: Please log in again');
       }
       
       debugPrint('Fetching projects from server');
       
-      // Use the exact same endpoint that the website uses
-      final response = await _dio.get('/api/Projects/GetUserProjects');
-      debugPrint('Projects response: ${response.data}');
-      
-      if (response.data is List) {
-        return List<Map<String, dynamic>>.from(response.data);
-      } else if (response.data is Map) {
-        if (response.data['data'] != null && response.data['data'] is List) {
-          return List<Map<String, dynamic>>.from(response.data['data']);
-        } else if (response.data['result'] != null && response.data['result'] is List) {
-          return List<Map<String, dynamic>>.from(response.data['result']);
-        } else if (response.data['items'] != null && response.data['items'] is List) {
-          return List<Map<String, dynamic>>.from(response.data['items']);
+      // Get token without Bearer prefix as we'll add it in the headers
+      final token = await storage.read(key: 'accessToken');
+      if (token == null) {
+        throw Exception('No authentication token found');
+      }
+
+      // Try domain-based URL first
+      try {
+        debugPrint('Attempting to fetch projects using domain URL');
+        final response = await _dio.get(
+          '/api/Projects/GetUserProjects',
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/json',
+              'Host': AppConfig.apiHost,
+            },
+          ),
+        );
+        
+        debugPrint('Projects response status: ${response.statusCode}');
+        debugPrint('Projects response body: ${response.data}');
+
+        if (response.statusCode == 200) {
+          if (response.data is List) {
+            return List<Map<String, dynamic>>.from(response.data);
+          } else if (response.data is Map) {
+            final data = response.data as Map<String, dynamic>;
+            if (data['data'] != null && data['data'] is List) {
+              return List<Map<String, dynamic>>.from(data['data']);
+            } else if (data['result'] != null && data['result'] is List) {
+              return List<Map<String, dynamic>>.from(data['result']);
+            }
+          }
         }
+      } catch (e) {
+        debugPrint('Domain-based projects fetch failed: $e');
       }
       
-      // If no valid response format, return empty list
-      debugPrint('No projects found in any response format, returning empty list');
-      return [];
+      // If domain-based request fails, try IP-based URL
+      try {
+        debugPrint('Attempting to fetch projects using IP URL');
+        _dio.options.baseUrl = AppConfig.apiIpUrl;
+        
+        final response = await _dio.get(
+          '/api/Projects/GetUserProjects',
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/json',
+              'Host': AppConfig.apiHost,
+            },
+          ),
+        );
+        
+        if (response.statusCode == 200) {
+          if (response.data is List) {
+            return List<Map<String, dynamic>>.from(response.data);
+          } else if (response.data is Map) {
+            final data = response.data as Map<String, dynamic>;
+            if (data['data'] != null && data['data'] is List) {
+              return List<Map<String, dynamic>>.from(data['data']);
+            } else if (data['result'] != null && data['result'] is List) {
+              return List<Map<String, dynamic>>.from(data['result']);
+            }
+          }
+        }
+        
+        debugPrint('IP-based projects fetch response: ${response.statusCode}');
+        debugPrint('Response body: ${response.data}');
+      } catch (e) {
+        debugPrint('IP-based projects fetch failed: $e');
+      } finally {
+        // Reset base URL back to domain
+        _dio.options.baseUrl = AppConfig.apiBaseUrl;
+      }
+      
+      throw Exception('Failed to fetch projects from both domain and IP');
     } catch (e) {
       debugPrint('Error fetching projects: $e');
       throw Exception('Failed to load projects: $e');
@@ -502,28 +591,37 @@ class ApiService {
         throw Exception('No internet connection');
       }
       
-      // Always return the standard bucket structure, as this is how the website seems to work
-      // The actual content for each bucket will be retrieved separately
-      final standardBuckets = getStandardBuckets();
-      
+      // Get token for authentication
+      final token = await storage.read(key: 'accessToken');
+      if (token == null) {
+        throw Exception('No authentication token found');
+      }
+
       // If no project ID, just return the standard buckets
       if (projectId == null) {
         debugPrint('No project ID provided, returning standard buckets');
-        return standardBuckets;
+        return getStandardBuckets();
       }
       
       debugPrint('Getting buckets for project: $projectId');
       
       try {
-        // This is where the website would retrieve project-specific data for these buckets
-        // We'll try the API call but fall back to standard buckets
-        final response = await _dio.get('/api/Buckets/GetProjectBuckets', 
-          queryParameters: {'ProjectGuid': projectId.toString()}
+        final response = await _dio.get(
+          '/api/Buckets/GetProjectBuckets',
+          queryParameters: {'ProjectGuid': projectId.toString()},
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/json',
+              'Host': AppConfig.apiHost,
+            },
+          ),
         );
         
-        debugPrint('Buckets response: ${response.data}');
-        
-        if (response.statusCode == 200 && response.data != null) {
+        debugPrint('Buckets response status: ${response.statusCode}');
+        debugPrint('Buckets response data: ${response.data}');
+
+        if (response.statusCode == 200) {
           List<Map<String, dynamic>> buckets = [];
           
           if (response.data is List) {
@@ -532,6 +630,8 @@ class ApiService {
             final data = response.data as Map<String, dynamic>;
             if (data['data'] != null && data['data'] is List) {
               buckets = List<Map<String, dynamic>>.from(data['data']);
+            } else if (data['result'] != null && data['result'] is List) {
+              buckets = List<Map<String, dynamic>>.from(data['result']);
             }
           }
           
@@ -547,7 +647,7 @@ class ApiService {
       
       // If we couldn't get buckets from the API or the API returned no buckets,
       // return the standard buckets with the project ID attached
-      final projectBuckets = standardBuckets.map((bucket) {
+      final standardBuckets = getStandardBuckets().map((bucket) {
         return {
           ...bucket,
           'projectId': projectId.toString(),
@@ -556,7 +656,7 @@ class ApiService {
       }).toList();
       
       debugPrint('Returning standard buckets with project ID attached');
-      return projectBuckets;
+      return standardBuckets;
     } catch (e) {
       debugPrint('Error getting buckets: $e');
       return getStandardBuckets();
@@ -571,49 +671,51 @@ class ApiService {
       }
       
       // Don't try to fetch data for placeholder buckets
-      if (bucketGuid.contains('-guid') || bucketGuid.contains('architecture-bucket')) {
+      if (bucketGuid.contains('-bucket')) {
         debugPrint('Skipping file fetch for placeholder bucket: $bucketGuid');
         return [];
       }
       
       debugPrint('Getting files for bucket: $bucketGuid');
       
-      // Print the token for debugging
+      // Get token for authentication
       final token = await storage.read(key: 'accessToken');
-      debugPrint('Auth token for request (truncated): ${token?.substring(0, min(20, token?.length ?? 0))}...');
-      
-      // Use the exact endpoint from the website - Attachments instead of Files
-      final response = await _dio.get('/api/Attachments/GetAttachmentsByBucket', 
-        queryParameters: {'BucketGuid': bucketGuid}
-      );
-      
-      debugPrint('Files response status: ${response.statusCode}');
-      debugPrint('Response headers: ${response.headers}');
-      
-      // Log more details about the response
-      if (response.data != null) {
-        if (response.data is List) {
-          debugPrint('Files response is a list of length: ${(response.data as List).length}');
-        } else if (response.data is Map) {
-          debugPrint('Files response is a map with keys: ${(response.data as Map).keys.join(', ')}');
-        } else {
-          debugPrint('Files response type: ${response.data.runtimeType}');
+      if (token == null) {
+        throw Exception('No authentication token found');
+      }
+
+      try {
+        final response = await _dio.get(
+          '/api/Attachments/GetAttachmentsByBucket',
+          queryParameters: {'BucketGuid': bucketGuid},
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/json',
+              'Host': AppConfig.apiHost,
+            },
+          ),
+        );
+        
+        debugPrint('Files response status: ${response.statusCode}');
+        debugPrint('Files response data: ${response.data}');
+
+        if (response.statusCode == 200) {
+          if (response.data is List) {
+            return List<Map<String, dynamic>>.from(response.data);
+          } else if (response.data is Map) {
+            final data = response.data as Map<String, dynamic>;
+            if (data['data'] != null && data['data'] is List) {
+              return List<Map<String, dynamic>>.from(data['data']);
+            } else if (data['result'] != null && data['result'] is List) {
+              return List<Map<String, dynamic>>.from(data['result']);
+            }
+          }
         }
+      } catch (e) {
+        debugPrint('Error fetching bucket files: $e');
       }
       
-      if (response.statusCode == 200 && response.data != null) {
-        if (response.data is List) {
-          final files = List<Map<String, dynamic>>.from(response.data);
-          debugPrint('Retrieved ${files.length} files for bucket $bucketGuid');
-          return files;
-        } else if (response.data is Map && response.data['data'] != null) {
-          final files = List<Map<String, dynamic>>.from(response.data['data']);
-          debugPrint('Retrieved ${files.length} files for bucket $bucketGuid from data field');
-          return files;
-        }
-      }
-      
-      debugPrint('No files found for bucket $bucketGuid');
       return [];
     } catch (e) {
       debugPrint('Error getting bucket files: $e');
@@ -628,50 +730,75 @@ class ApiService {
         throw Exception('No internet connection');
       }
       
-      // Don't try to fetch data for placeholder buckets
-      if (bucketGuid.contains('-guid') || bucketGuid.contains('architecture-bucket')) {
+      if (bucketGuid.contains('-bucket')) {
         debugPrint('Skipping task fetch for placeholder bucket: $bucketGuid');
         return [];
       }
       
       debugPrint('Getting tasks for bucket: $bucketGuid');
       
-      // Print the token for debugging
       final token = await storage.read(key: 'accessToken');
-      debugPrint('Auth token for tasks request (truncated): ${token?.substring(0, min(20, token?.length ?? 0))}...');
-      
-      // Use the exact endpoint from the website
-      final response = await _dio.get('/api/BucketTasks/GetBucketTasks', 
-        queryParameters: {'BucketGuid': bucketGuid}
-      );
-      
-      debugPrint('Tasks response status: ${response.statusCode}');
-      debugPrint('Response headers: ${response.headers}');
-      
-      // Log more details about the response
-      if (response.data != null) {
-        if (response.data is List) {
-          debugPrint('Tasks response is a list of length: ${(response.data as List).length}');
-        } else if (response.data is Map) {
-          debugPrint('Tasks response is a map with keys: ${(response.data as Map).keys.join(', ')}');
-        } else {
-          debugPrint('Tasks response type: ${response.data.runtimeType}');
+      if (token == null) {
+        throw Exception('No authentication token found');
+      }
+
+      try {
+        final response = await _dio.get(
+          '/api/BucketTasks/GetBucketTasks',
+          queryParameters: {'BucketGuid': bucketGuid},
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/json',
+              'Host': AppConfig.apiHost,
+            },
+          ),
+        );
+        
+        debugPrint('Tasks response status: ${response.statusCode}');
+        debugPrint('Tasks response data: ${response.data}');
+
+        if (response.statusCode == 200) {
+          List<Map<String, dynamic>> tasks = [];
+          
+          if (response.data is List) {
+            tasks = List<Map<String, dynamic>>.from(response.data);
+          } else if (response.data is Map) {
+            final data = response.data as Map<String, dynamic>;
+            if (data['data'] != null && data['data'] is List) {
+              tasks = List<Map<String, dynamic>>.from(data['data']);
+            } else if (data['result'] != null && data['result'] is List) {
+              tasks = List<Map<String, dynamic>>.from(data['result']);
+            }
+          }
+
+          // Format the assigned user data
+          return tasks.map((task) {
+            // Extract assigned user info
+            String assignedTo = 'Unassigned';
+            if (task['assignedTo'] != null) {
+              if (task['assignedTo'] is Map) {
+                assignedTo = task['assignedTo']['displayName'] ?? 
+                           task['assignedTo']['name'] ?? 
+                           'Unknown User';
+              } else if (task['employee'] != null && task['employee'] is Map) {
+                assignedTo = task['employee']['displayName'] ?? 
+                           task['employee']['name'] ?? 
+                           'Unknown User';
+              }
+            }
+
+            return {
+              ...task,
+              'assignedToName': assignedTo,
+              'displayAssignee': assignedTo,
+            };
+          }).toList();
         }
+      } catch (e) {
+        debugPrint('Error fetching bucket tasks: $e');
       }
       
-      if (response.statusCode == 200 && response.data != null) {
-        if (response.data is List) {
-          final tasks = List<Map<String, dynamic>>.from(response.data);
-          debugPrint('Retrieved ${tasks.length} tasks for bucket $bucketGuid');
-          return tasks;
-        } else if (response.data is Map && response.data['data'] != null) {
-          final tasks = List<Map<String, dynamic>>.from(response.data['data']);
-          debugPrint('Retrieved ${tasks.length} tasks for bucket $bucketGuid from data field');
-          return tasks;
-        }
-      }
-      
-      debugPrint('No tasks found for bucket $bucketGuid');
       return [];
     } catch (e) {
       debugPrint('Error getting bucket tasks: $e');

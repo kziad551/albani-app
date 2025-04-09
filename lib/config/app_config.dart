@@ -3,9 +3,11 @@ import 'package:flutter/foundation.dart';
 class AppConfig {
   // Backend API configuration
   static const String apiHost = 'albani.smartsoft-me.com';
+  static const String apiIpAddress = '64.227.31.17'; // IP address from ping test
   static const bool useHttps = true;
   static const int apiPort = 443;  // HTTPS port
-  static const String apiBaseUrl = '${useHttps ? "https" : "http"}://$apiHost';
+  static const String apiBaseUrl = 'https://$apiHost';
+  static const String apiIpUrl = 'https://$apiIpAddress'; // Always use HTTPS
   
   // Database info (for reference only)
   static const String dbHost = 'localhost';  // From your appsettings.json
@@ -24,9 +26,19 @@ class AppConfig {
   // Feature flags
   static const bool enableOfflineMode = false;  // Disable offline mode for production
   static const bool debugMode = false;          // Disable debug mode for production
+  static const bool acceptUntrustedCertificates = true; // Accept untrusted certificates in release mode
   
   // Debug settings
-  static bool get debugApiCalls => false;  // Disable API call debugging for production
+  static bool get debugApiCalls => kDebugMode; // Only enable in debug mode
+  
+  // API Headers
+  static Map<String, String> get defaultHeaders => {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'Host': apiHost,
+    'Origin': 'https://$apiHost',
+    'Referer': 'https://$apiHost/',
+  };
 
   // Storage keys
   static const String tokenKey = 'accessToken';

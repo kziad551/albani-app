@@ -72,7 +72,7 @@ class _LoginScreenState extends State<LoginScreen> {
       _isLoading = true;
     });
 
-    final hasValidToken = await _authService.hasValidToken();
+    final hasValidToken = await _authService.validateToken();
     
     if (hasValidToken) {
       if (mounted) {

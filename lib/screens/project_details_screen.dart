@@ -719,7 +719,13 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                       return Card(
                         child: ListTile(
                           leading: const Icon(Icons.insert_drive_file),
-                          title: Text(fileName),
+                          title: Text(
+                            fileName,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
@@ -982,7 +988,13 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                       final String taskTitle = _getSafeString(task['title']) ?? _getSafeString(task['name']) ?? 'Unnamed Task';
                       final String taskDesc = _getSafeString(task['description']) ?? _getSafeString(task['desc']) ?? '';
                       final String taskStatus = _getSafeString(task['status']) ?? 'pending';
-                      final String taskAssignee = _getSafeString(task['assignedTo']) ?? _getSafeString(task['assignee']) ?? 'Unassigned';
+                      final String taskAssignee = _getSafeString(task['assignedToName']) ?? 
+                                                _getSafeString(task['displayAssignee']) ?? 
+                                                _getSafeString(task['assignedTo']?['displayName']) ?? 
+                                                _getSafeString(task['assignedTo']?['name']) ?? 
+                                                _getSafeString(task['employee']?['displayName']) ?? 
+                                                _getSafeString(task['employee']?['name']) ?? 
+                                                'Unassigned';
                       final String taskPriority = _getSafeString(task['priority']) ?? 'None';
                       
                       // Determine the priority color
@@ -1675,7 +1687,13 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
       final String taskTitle = _getSafeString(task['title']) ?? _getSafeString(task['name']) ?? 'Unnamed Task';
       final String taskDesc = _getSafeString(task['description']) ?? _getSafeString(task['desc']) ?? '';
       final String taskStatus = _getSafeString(task['status']) ?? 'pending';
-      final String taskAssignee = _getSafeString(task['assignedTo']) ?? _getSafeString(task['assignee']) ?? 'Unassigned';
+      final String taskAssignee = _getSafeString(task['assignedToName']) ?? 
+                                _getSafeString(task['displayAssignee']) ?? 
+                                _getSafeString(task['assignedTo']?['displayName']) ?? 
+                                _getSafeString(task['assignedTo']?['name']) ?? 
+                                _getSafeString(task['employee']?['displayName']) ?? 
+                                _getSafeString(task['employee']?['name']) ?? 
+                                'Unassigned';
       final String taskPriority = _getSafeString(task['priority']) ?? 'None';
       
       // Apply status filter
