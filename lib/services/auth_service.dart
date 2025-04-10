@@ -98,6 +98,32 @@ class AuthService {
                 await storage.write(key: 'refreshToken', value: data['refreshToken']);
               }
               
+              // Store user data if available
+              try {
+                // Check if user data is in the response
+                if (data['user'] != null) {
+                  final userData = data['user'] as Map<String, dynamic>;
+                  _currentUser = userData;
+                  
+                  // Store important user fields
+                  if (userData['name'] != null) {
+                    await storage.write(key: 'userName', value: userData['name']);
+                  }
+                  if (userData['userName'] != null || userData['username'] != null) {
+                    await storage.write(key: 'username', value: userData['userName'] ?? userData['username']);
+                  }
+                  if (userData['role'] != null) {
+                    await storage.write(key: 'userRole', value: userData['role']);
+                  }
+                  debugPrint('Stored user data from login response');
+                } else {
+                  // Try to get user information immediately after login
+                  await getCurrentUser();
+                }
+              } catch (e) {
+                debugPrint('Error storing user data: $e');
+              }
+              
               _isAuthenticated = true;
               debugPrint('Login successful with domain URL');
               return true;
@@ -141,6 +167,32 @@ class AuthService {
               
               if (data['refreshToken'] != null) {
                 await storage.write(key: 'refreshToken', value: data['refreshToken']);
+              }
+              
+              // Store user data if available
+              try {
+                // Check if user data is in the response
+                if (data['user'] != null) {
+                  final userData = data['user'] as Map<String, dynamic>;
+                  _currentUser = userData;
+                  
+                  // Store important user fields
+                  if (userData['name'] != null) {
+                    await storage.write(key: 'userName', value: userData['name']);
+                  }
+                  if (userData['userName'] != null || userData['username'] != null) {
+                    await storage.write(key: 'username', value: userData['userName'] ?? userData['username']);
+                  }
+                  if (userData['role'] != null) {
+                    await storage.write(key: 'userRole', value: userData['role']);
+                  }
+                  debugPrint('Stored user data from login response (IP-based)');
+                } else {
+                  // Try to get user information immediately after login
+                  await getCurrentUser();
+                }
+              } catch (e) {
+                debugPrint('Error storing user data: $e');
               }
               
               _isAuthenticated = true;
@@ -385,55 +437,175 @@ class AuthService {
   
   // Get current user info
   Future<Map<String, dynamic>?> getCurrentUser() async {
-    if (!_isAuthenticated) return null;
+    if (!_isAuthenticated) {
+      debugPrint('Not authenticated, returning null from getCurrentUser');
+      return null;
+    }
     
     try {
-      final token = await getToken();
+      final token = await storage.read(key: 'accessToken') ?? await storage.read(key: 'token');
       if (token == null) {
         debugPrint('No token available for getCurrentUser');
         return null;
       }
       
-      // Use the exact endpoint from network tab: /api/Employees/info
-      debugPrint('Fetching user info from: $_baseUrl/api/Employees/info');
+      debugPrint('Using token for getCurrentUser: ${token.substring(0, min(10, token.length))}...');
       
-      final response = await http.get(
-        Uri.parse('$_baseUrl/api/Employees/info'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json, text/plain, */*',
-          'Authorization': 'Bearer $token',
-          'Origin': 'https://albani.smartsoft-me.com',
-          'Referer': 'https://albani.smartsoft-me.com/',
-          'Host': 'albani.smartsoft-me.com',
-          'Connection': 'keep-alive'
-        },
-      ).timeout(Duration(seconds: AppConfig.connectionTimeout));
-      
-      debugPrint('User info response status: ${response.statusCode}');
-      
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data is Map) {
-          if (data['data'] != null) {
-            _currentUser = data['data'] as Map<String, dynamic>;
-          } else {
-            _currentUser = data as Map<String, dynamic>;
-          }
-          
-          debugPrint('Retrieved user info: ${_currentUser!['username'] ?? 'unknown'}');
-          return _currentUser;
+      // First, try to fetch from domain URL
+      try {
+        debugPrint('Fetching user info from domain URL: $_baseUrl/api/Employees/info');
+        
+        final response = await http.get(
+          Uri.parse('$_baseUrl/api/Employees/info'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/plain, */*',
+            'Authorization': 'Bearer $token',
+            'Origin': 'https://albani.smartsoft-me.com',
+            'Referer': 'https://albani.smartsoft-me.com/',
+            'Host': 'albani.smartsoft-me.com',
+            'Connection': 'keep-alive'
+          },
+        ).timeout(Duration(seconds: AppConfig.connectionTimeout));
+        
+        debugPrint('User info response status from domain: ${response.statusCode}');
+        debugPrint('User info response body: ${response.body.substring(0, min(100, response.body.length))}...');
+        
+        if (response.statusCode == 200) {
+          return _processUserResponse(response.body);
         }
-      } else if (response.statusCode == 401) {
-        // Token expired or invalid
-        _isAuthenticated = false;
-        return null;
+      } catch (e) {
+        debugPrint('Error fetching user from domain URL: $e');
       }
       
-      return _currentUser; // Return cached user if available
+      // If domain URL fails, try IP URL
+      try {
+        debugPrint('Fetching user info from IP URL: $_ipUrl/api/Employees/info');
+        
+        final response = await http.get(
+          Uri.parse('$_ipUrl/api/Employees/info'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/plain, */*',
+            'Authorization': 'Bearer $token',
+            'Origin': 'https://albani.smartsoft-me.com',
+            'Referer': 'https://albani.smartsoft-me.com/',
+            'Host': 'albani.smartsoft-me.com',
+            'Connection': 'keep-alive'
+          },
+        ).timeout(Duration(seconds: AppConfig.connectionTimeout));
+        
+        debugPrint('User info response status from IP: ${response.statusCode}');
+        debugPrint('User info response body from IP: ${response.body.substring(0, min(100, response.body.length))}...');
+        
+        if (response.statusCode == 200) {
+          return _processUserResponse(response.body);
+        }
+      } catch (e) {
+        debugPrint('Error fetching user from IP URL: $e');
+      }
+      
+      // As a last resort, try to fetch the user profile endpoint
+      try {
+        debugPrint('Trying alternative endpoint: $_baseUrl/api/Employees/profile');
+        
+        final response = await http.get(
+          Uri.parse('$_baseUrl/api/Employees/profile'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/plain, */*',
+            'Authorization': 'Bearer $token',
+            'Origin': 'https://albani.smartsoft-me.com',
+            'Referer': 'https://albani.smartsoft-me.com/',
+            'Host': 'albani.smartsoft-me.com',
+            'Connection': 'keep-alive'
+          },
+        ).timeout(Duration(seconds: AppConfig.connectionTimeout));
+        
+        debugPrint('User profile response status: ${response.statusCode}');
+        debugPrint('User profile response body: ${response.body.substring(0, min(100, response.body.length))}...');
+        
+        if (response.statusCode == 200) {
+          return _processUserResponse(response.body);
+        }
+      } catch (e) {
+        debugPrint('Error fetching user profile: $e');
+      }
+      
+      // Return cached user if available or null
+      debugPrint('All API attempts failed, trying to load from secure storage');
+      
+      // Try to load user data from secure storage
+      if (_currentUser == null) {
+        try {
+          final storedName = await storage.read(key: 'userName');
+          final storedUsername = await storage.read(key: 'username');
+          final storedRole = await storage.read(key: 'userRole');
+          
+          if (storedName != null || storedUsername != null) {
+            _currentUser = {
+              'name': storedName ?? 'User',
+              'userName': storedUsername ?? 'user',
+              'username': storedUsername ?? 'user',
+              'role': storedRole ?? 'User',
+            };
+            debugPrint('Loaded user data from secure storage: $_currentUser');
+          }
+        } catch (e) {
+          debugPrint('Error loading user data from secure storage: $e');
+        }
+      }
+      
+      debugPrint('Returning cached user: $_currentUser');
+      return _currentUser;
     } catch (e) {
       debugPrint('Get current user error: $e');
       return _currentUser; // Return cached user if available
+    }
+  }
+  
+  // Helper to process user response
+  Map<String, dynamic>? _processUserResponse(String responseBody) {
+    try {
+      debugPrint('Processing user response: ${responseBody.substring(0, min(100, responseBody.length))}...');
+      
+      final data = jsonDecode(responseBody);
+      if (data is Map) {
+        if (data['data'] != null) {
+          _currentUser = data['data'] as Map<String, dynamic>;
+          debugPrint('Found user in data field: ${_currentUser.toString().substring(0, min(100, _currentUser.toString().length))}...');
+        } else if (data['result'] != null) {
+          _currentUser = data['result'] as Map<String, dynamic>;
+          debugPrint('Found user in result field');
+        } else {
+          _currentUser = data as Map<String, dynamic>;
+          debugPrint('Using entire response as user data');
+        }
+        
+        // Debug available fields
+        debugPrint('Available user fields: ${_currentUser!.keys.toList()}');
+        
+        // Try to get username/name from various possible fields
+        final username = _currentUser!['username'] ?? 
+                         _currentUser!['userName'] ?? 
+                         _currentUser!['Username'] ?? 
+                         _currentUser!['UserName'] ?? 'unknown';
+                         
+        final name = _currentUser!['name'] ?? 
+                    _currentUser!['Name'] ?? 
+                    _currentUser!['fullName'] ?? 
+                    _currentUser!['displayName'] ?? username;
+                    
+        debugPrint('Retrieved user info - Name: $name, Username: $username');
+        
+        return _currentUser;
+      } else {
+        debugPrint('Response is not a Map: ${data.runtimeType}');
+        return null;
+      }
+    } catch (e) {
+      debugPrint('Error processing user response: $e');
+      return null;
     }
   }
   

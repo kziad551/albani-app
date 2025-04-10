@@ -7,6 +7,7 @@ import 'screens/add_project_screen.dart';
 import 'screens/edit_project_screen.dart';
 import 'screens/project_details_screen.dart';
 import 'screens/project_buckets_screen.dart';
+import 'services/auth_service.dart';
 
 void main() {
   runApp(const MyApp());
@@ -17,6 +18,8 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final AuthService authService = AuthService();
+    
     return MaterialApp(
       title: 'AlBani Project Manager',
       debugShowCheckedModeBanner: false,
@@ -38,11 +41,91 @@ class MyApp extends StatelessWidget {
       routes: {
         '/login': (context) => const LoginScreen(),
         '/projects': (context) => const ProjectsScreen(),
-        '/users': (context) => const UsersScreen(),
-        '/logs': (context) => const LogsScreen(),
-        '/add_project': (context) => const AddProjectScreen(),
+        '/dashboard': (context) => const ProjectsScreen(), // Alias for dashboard
+        '/users': (context) => FutureBuilder<Map<String, dynamic>?>(
+          future: authService.getCurrentUser(),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            }
+            
+            // Check if user is admin
+            final userData = snapshot.data;
+            final userRole = userData?['role']?.toString().toLowerCase() ?? '';
+            final isAdmin = userRole == 'admin' || userRole == 'superadmin';
+            
+            if (isAdmin) {
+              return const UsersScreen();
+            } else {
+              // Redirect non-admin users to dashboard
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                Navigator.pushReplacementNamed(context, '/dashboard');
+              });
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            }
+          },
+        ),
+        '/logs': (context) => FutureBuilder<Map<String, dynamic>?>(
+          future: authService.getCurrentUser(),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            }
+            
+            // Check if user is admin
+            final userData = snapshot.data;
+            final userRole = userData?['role']?.toString().toLowerCase() ?? '';
+            final isAdmin = userRole == 'admin' || userRole == 'superadmin';
+            
+            if (isAdmin) {
+              return const LogsScreen();
+            } else {
+              // Redirect non-admin users to dashboard
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                Navigator.pushReplacementNamed(context, '/dashboard');
+              });
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            }
+          },
+        ),
+        '/add_project': (context) => FutureBuilder<Map<String, dynamic>?>(
+          future: authService.getCurrentUser(),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            }
+            
+            // Check if user is admin
+            final userData = snapshot.data;
+            final userRole = userData?['role']?.toString().toLowerCase() ?? '';
+            final isAdmin = userRole == 'admin' || userRole == 'superadmin';
+            
+            if (isAdmin) {
+              return const AddProjectScreen();
+            } else {
+              // Redirect non-admin users to dashboard
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                Navigator.pushReplacementNamed(context, '/dashboard');
+              });
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            }
+          },
+        ),
       },
       onGenerateRoute: (settings) {
+        // Handle protected routes here
         if (settings.name == '/project_details') {
           final args = settings.arguments as Map<String, dynamic>;
           return MaterialPageRoute(
@@ -54,20 +137,73 @@ class MyApp extends StatelessWidget {
         } else if (settings.name == '/edit_project') {
           final args = settings.arguments as Map<String, dynamic>;
           return MaterialPageRoute(
-            builder: (context) => EditProjectScreen(
-              projectId: args['projectId'],
-              title: args['title'],
-              description: args['description'],
-              location: args['location'],
-              status: args['status'],
+            builder: (context) => FutureBuilder<Map<String, dynamic>?>(
+              future: AuthService().getCurrentUser(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                
+                // Check if user is admin
+                final userData = snapshot.data;
+                final userRole = userData?['role']?.toString().toLowerCase() ?? '';
+                final isAdmin = userRole == 'admin' || userRole == 'superadmin';
+                
+                if (isAdmin) {
+                  return EditProjectScreen(
+                    projectId: args['projectId'],
+                    title: args['title'],
+                    description: args['description'],
+                    location: args['location'],
+                    status: args['status'],
+                  );
+                } else {
+                  // Redirect non-admin users to dashboard
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    Navigator.pushReplacementNamed(context, '/dashboard');
+                  });
+                  return const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  );
+                }
+              },
             ),
           );
         } else if (settings.name == '/project_buckets') {
           final args = settings.arguments as Map<String, dynamic>;
+          // Check if user is admin before allowing access to buckets
           return MaterialPageRoute(
-            builder: (context) => ProjectBucketsScreen(
-              projectId: args['projectId'],
-              projectName: args['projectName'],
+            builder: (context) => FutureBuilder<Map<String, dynamic>?>(
+              future: AuthService().getCurrentUser(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                
+                // Check if user is admin
+                final userData = snapshot.data;
+                final userRole = userData?['role']?.toString().toLowerCase() ?? '';
+                final isAdmin = userRole == 'admin' || userRole == 'superadmin';
+                
+                if (isAdmin) {
+                  return ProjectBucketsScreen(
+                    projectId: args['projectId'],
+                    projectName: args['projectName'],
+                  );
+                } else {
+                  // Redirect non-admin users to dashboard
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    Navigator.pushReplacementNamed(context, '/dashboard');
+                  });
+                  return const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  );
+                }
+              },
             ),
           );
         }

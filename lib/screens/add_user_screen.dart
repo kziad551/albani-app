@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../widgets/app_header.dart';
 import '../services/api_service.dart';
+import 'dart:convert';
 
 class AddUserScreen extends StatefulWidget {
   const AddUserScreen({super.key});
@@ -71,16 +72,19 @@ class _AddUserScreenState extends State<AddUserScreen> {
       // Prepare user data
       final Map<String, dynamic> userData = {
         'userName': _usernameController.text.trim(),
-        'firstName': firstName,
-        'lastName': lastName,
+        'name': fullName,  // Use the full name directly as required
         'phoneNumber': _phoneController.text.trim(),
         'email': _emailController.text.trim(),
         'password': _passwordController.text,
         'role': _selectedRole ?? 'User',
       };
       
-      // Call the API to create the user
-      await _apiService.post('api/Employees', userData);
+      print('Sending user data: ${jsonEncode(userData)}');
+      
+      // Call the API to create the user with the correct endpoint
+      final response = await _apiService.post('api/Employees/adminRegister', userData);
+      
+      print('API response: $response');
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -89,9 +93,29 @@ class _AddUserScreenState extends State<AddUserScreen> {
         Navigator.pop(context, true); // Return true to indicate successful creation
       }
     } catch (e) {
+      print('Error creating user: $e');
+      
+      // Extract more details from the error if possible
+      String errorMessage = 'Failed to create user';
+      if (e.toString().contains(':')) {
+        final parts = e.toString().split(':');
+        if (parts.length > 1) {
+          errorMessage = parts.sublist(1).join(':').trim();
+        }
+      }
+      
+      // If error is empty or just contains a status code, provide a more helpful message
+      if (errorMessage.isEmpty || errorMessage.endsWith('-')) {
+        errorMessage = 'The server rejected the request. This might be because the username or email is already in use.';
+      }
+      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to create user: $e')),
+          SnackBar(
+            content: Text(errorMessage),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 5),
+          ),
         );
       }
     } finally {

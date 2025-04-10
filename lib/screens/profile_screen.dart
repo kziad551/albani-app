@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import '../widgets/app_header.dart';
+import '../services/auth_service.dart';
+import '../services/api_service.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -12,13 +14,85 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController(text: 'Super Admin');
-  final _usernameController = TextEditingController(text: 'SAdmin');
+  final _nameController = TextEditingController();
+  final _usernameController = TextEditingController();
   final _oldPasswordController = TextEditingController();
   final _newPasswordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
   File? _selectedImage;
-  String _initials = 'SA';
+  String _initials = '';
+  bool _isLoading = true;
+  final AuthService _authService = AuthService();
+  Map<String, dynamic>? _userData;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserData();
+  }
+
+  Future<void> _loadUserData() async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final userData = await _authService.getCurrentUser();
+      
+      // Debug: Print the entire user data to see what fields are available
+      debugPrint('User data received in profile: $userData');
+      
+      if (userData != null) {
+        setState(() {
+          _userData = userData;
+          
+          // Try different possible field names for name
+          final name = userData['name'] ?? 
+                      userData['Name'] ?? 
+                      userData['fullName'] ?? 
+                      userData['displayName'] ?? 
+                      '';
+          _nameController.text = name;
+          debugPrint('Using name in profile: $name');
+          
+          // Try different possible field names for username
+          final username = userData['username'] ?? 
+                          userData['userName'] ?? 
+                          userData['Username'] ?? 
+                          userData['UserName'] ?? 
+                          '';
+          _usernameController.text = username;
+          debugPrint('Using username in profile: $username');
+          
+          // Generate initials from name
+          if (_nameController.text.isNotEmpty) {
+            final nameParts = _nameController.text.split(' ');
+            if (nameParts.length > 1) {
+              _initials = '${nameParts[0][0]}${nameParts[1][0]}';
+            } else if (nameParts.isNotEmpty) {
+              _initials = nameParts[0][0];
+            }
+          } else if (_usernameController.text.isNotEmpty) {
+            _initials = _usernameController.text[0];
+          }
+          
+          _initials = _initials.toUpperCase();
+          debugPrint('Using initials in profile: $_initials');
+        });
+      } else {
+        debugPrint('No user data received in profile');
+      }
+    } catch (e) {
+      debugPrint('Error loading user data in profile: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load profile: $e')),
+      );
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
 
   Future<void> _pickImage() async {
     try {
@@ -60,14 +134,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: Colors.black),
-          onPressed: () => Navigator.pop(context),
+          onPressed: () {
+            // Check if we can pop the current screen
+            if (Navigator.canPop(context)) {
+              Navigator.pop(context);
+            } else {
+              // If we can't pop, navigate to the dashboard
+              Navigator.pushReplacementNamed(context, '/dashboard');
+            }
+          },
         ),
         title: const Text(
           'BACK',
           style: TextStyle(color: Colors.black),
         ),
       ),
-      body: SingleChildScrollView(
+      body: _isLoading 
+          ? const Center(child: CircularProgressIndicator())
+          : SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(16.0),
           child: Column(
@@ -123,9 +207,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ],
                       ),
                       const SizedBox(width: 16),
-                      const Text(
-                        'Super Admin',
-                        style: TextStyle(
+                      Text(
+                        _nameController.text,
+                        style: const TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.w500,
                         ),
@@ -283,7 +367,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           child: ElevatedButton(
                             onPressed: () {
                               if (_formKey.currentState!.validate()) {
-                                // TODO: Implement save functionality
+                                _updateProfile();
                               }
                             },
                             style: ElevatedButton.styleFrom(
@@ -312,5 +396,83 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _updateProfile() async {
+    if (_userData == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('User data not loaded yet')),
+      );
+      return;
+    }
+    
+    // Only validate password fields if they're not empty
+    if (_newPasswordController.text.isNotEmpty) {
+      // Check if new password and confirm password match
+      if (_newPasswordController.text != _confirmPasswordController.text) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('New passwords do not match')),
+        );
+        return;
+      }
+      
+      // Require old password if changing password
+      if (_oldPasswordController.text.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please enter your current password')),
+        );
+        return;
+      }
+    }
+    
+    setState(() {
+      _isLoading = true;
+    });
+    
+    try {
+      // Prepare the update data
+      final Map<String, dynamic> updateData = {
+        'name': _nameController.text.trim(),
+      };
+      
+      // Add password change data if provided
+      if (_newPasswordController.text.isNotEmpty) {
+        updateData['oldPassword'] = _oldPasswordController.text;
+        updateData['newPassword'] = _newPasswordController.text;
+      }
+      
+      // Call the API service to update the profile
+      final apiService = ApiService();
+      
+      // Get the user ID from the user data
+      final userId = _userData!['id'] ?? _userData!['userId'];
+      
+      if (userId == null) {
+        throw Exception('User ID not found');
+      }
+      
+      await apiService.put('api/Employees/$userId', updateData);
+      
+      // Refresh user data
+      await _loadUserData();
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Profile updated successfully')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to update profile: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
   }
 } 
