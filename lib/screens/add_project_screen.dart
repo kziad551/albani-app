@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../utils/dropdown_helpers.dart';
 
 class AddProjectScreen extends StatefulWidget {
   const AddProjectScreen({super.key});
@@ -18,13 +19,8 @@ class _AddProjectScreenState extends State<AddProjectScreen> {
   String _errorMessage = '';
   final ApiService _apiService = ApiService();
 
-  final List<String> _statusOptions = [
-    'Pending',
-    'In Progress',
-    'Completed',
-    'On Hold',
-    'Cancelled'
-  ];
+  // Use the standardized options from DropdownHelpers
+  final List<String> _statusOptions = DropdownHelpers.projectStatusOptions;
 
   @override
   void dispose() {

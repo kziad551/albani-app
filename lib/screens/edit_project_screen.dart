@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../utils/dropdown_helpers.dart';
 
 class EditProjectScreen extends StatefulWidget {
   final int projectId;
@@ -31,13 +32,8 @@ class _EditProjectScreenState extends State<EditProjectScreen> {
   String _errorMessage = '';
   final ApiService _apiService = ApiService();
 
-  final List<String> _statusOptions = [
-    'Pending',
-    'In Progress',
-    'Completed',
-    'On Hold',
-    'Cancelled'
-  ];
+  // Use the standardized options from DropdownHelpers
+  final List<String> _statusOptions = DropdownHelpers.projectStatusOptions;
 
   @override
   void initState() {
@@ -46,21 +42,8 @@ class _EditProjectScreenState extends State<EditProjectScreen> {
     _descriptionController = TextEditingController(text: widget.description);
     _locationController = TextEditingController(text: widget.location);
     
-    // Normalize the status to ensure it matches exactly one of the dropdown options
-    String normalizedStatus = widget.status;
-    
-    // Check if the status matches any of our options (case-insensitive)
-    if (!_statusOptions.contains(normalizedStatus)) {
-      // Try to find a matching status (case-insensitive)
-      final matchedStatus = _statusOptions.firstWhere(
-        (status) => status.toLowerCase() == normalizedStatus.toLowerCase(),
-        // Default to 'In Progress' if no match is found
-        orElse: () => 'In Progress',
-      );
-      normalizedStatus = matchedStatus;
-    }
-    
-    _selectedStatus = normalizedStatus;
+    // Use the helper to normalize the status
+    _selectedStatus = DropdownHelpers.normalizeProjectStatus(widget.status);
   }
 
   @override

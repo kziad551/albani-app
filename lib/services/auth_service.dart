@@ -13,11 +13,30 @@ class AuthService {
   // Singleton pattern
   static final AuthService _instance = AuthService._internal();
   factory AuthService() => _instance;
-  AuthService._internal();
+  AuthService._internal() {
+    // Initialize Dio instance with appropriate configurations
+    _dio = Dio()
+      ..options.baseUrl = AppConfig.apiBaseUrl
+      ..options.connectTimeout = Duration(seconds: AppConfig.connectionTimeout)
+      ..options.receiveTimeout = Duration(seconds: AppConfig.connectionTimeout)
+      ..options.validateStatus = (status) => status! < 500;
+
+    // Configure SSL certificate handling
+    if (_dio.httpClientAdapter is IOHttpClientAdapter) {
+      (_dio.httpClientAdapter as IOHttpClientAdapter).onHttpClientCreate = (client) {
+        client.badCertificateCallback = (cert, host, port) {
+          debugPrint('Validating certificate for $host:$port');
+          return true; // Accept all certificates in release mode
+        };
+        return client;
+      };
+    }
+  }
   
   final String _baseUrl = AppConfig.apiBaseUrl;
   final String _ipUrl = AppConfig.apiIpUrl; // Add fallback IP URL
   final storage = const FlutterSecureStorage();
+  late final Dio _dio; // Dio instance for HTTP requests
   
   // User state
   bool _isAuthenticated = false;
@@ -48,28 +67,10 @@ class AuthService {
 
       debugPrint('Request body: ${jsonEncode(requestBody)}');
 
-      // Create a Dio instance with SSL certificate handling
-      final dio = Dio()
-        ..options.baseUrl = AppConfig.apiBaseUrl
-        ..options.connectTimeout = Duration(seconds: AppConfig.connectionTimeout)
-        ..options.receiveTimeout = Duration(seconds: AppConfig.connectionTimeout)
-        ..options.validateStatus = (status) => status! < 500;
-
-      // Configure SSL certificate handling for release mode
-      if (dio.httpClientAdapter is IOHttpClientAdapter) {
-        (dio.httpClientAdapter as IOHttpClientAdapter).onHttpClientCreate = (client) {
-          client.badCertificateCallback = (cert, host, port) {
-            debugPrint('Validating certificate for $host:$port');
-            return true; // Accept all certificates in release mode
-          };
-          return client;
-        };
-      }
-
       // Try domain URL first
       try {
         debugPrint('Attempting login with domain URL: ${AppConfig.apiBaseUrl}');
-        final response = await dio.post(
+        final response = await _dio.post(
           '/api/Employees/login',
           data: requestBody,
           options: Options(
@@ -137,9 +138,9 @@ class AuthService {
       // Try IP-based URL as fallback
       try {
         debugPrint('Attempting login with IP URL: ${AppConfig.apiIpUrl}');
-        dio.options.baseUrl = AppConfig.apiIpUrl;
+        _dio.options.baseUrl = AppConfig.apiIpUrl;
         
-        final response = await dio.post(
+        final response = await _dio.post(
           '/api/Employees/login',
           data: requestBody,
           options: Options(
@@ -609,7 +610,7 @@ class AuthService {
     }
   }
   
-  // Check if token is valid
+  // Validate token on app start
   Future<bool> validateToken() async {
     try {
       debugPrint('\n=== Token Validation Started ===');
@@ -627,58 +628,79 @@ class AuthService {
         return false;
       }
 
-      // Create HttpClient with custom settings
-      final client = HttpClient()
-        ..connectionTimeout = Duration(seconds: 30)
-        ..badCertificateCallback = (cert, host, port) {
-          debugPrint('Validating certificate for $host:$port');
-          return true; // Accept all certificates for now
-        };
-
+      // Try to check token validity and refresh if needed
       try {
-        debugPrint('Attempting token validation with domain URL');
-        final request = await client.getUrl(
-          Uri.parse('${AppConfig.apiBaseUrl}/api/Employees/validate')
+        // First try using common auth validation endpoint
+        final validationResponse = await _dio.get(
+          '/api/Employees/validate',
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/json',
+            },
+            validateStatus: (status) => true,
+          ),
         );
         
-        // Add headers
-        request.headers.set('Authorization', 'Bearer $token');
-        request.headers.set('Accept', 'application/json');
-        request.headers.set('Host', 'albani.smartsoft-me.com');
-        
-        final response = await request.close();
-        if (response.statusCode == 200) {
-          debugPrint('Token validated successfully with domain URL');
+        // Check if token is valid
+        if (validationResponse.statusCode == 200) {
+          debugPrint('Token validated successfully');
           return true;
+        } 
+        
+        // If token is invalid or expired (401), try to refresh it
+        if (validationResponse.statusCode == 401) {
+          debugPrint('Token validation failed (401), attempting to refresh token');
+          
+          // Try to refresh token - Implementation depends on API's refresh mechanism
+          final refreshToken = await storage.read(key: 'refreshToken');
+          if (refreshToken != null) {
+            try {
+              final refreshResponse = await _dio.post(
+                '/api/Employees/refreshToken',
+                data: {
+                  'refreshToken': refreshToken,
+                },
+                options: Options(
+                  validateStatus: (status) => true,
+                ),
+              );
+              
+              if (refreshResponse.statusCode == 200 && refreshResponse.data != null) {
+                final refreshData = refreshResponse.data;
+                
+                // Extract new tokens
+                final newToken = refreshData['accessToken'] ?? refreshData['token'];
+                final newRefreshToken = refreshData['refreshToken'];
+                
+                if (newToken != null) {
+                  // Save the new tokens
+                  await storage.write(key: 'accessToken', value: newToken);
+                  await storage.write(key: 'token', value: newToken);
+                  
+                  if (newRefreshToken != null) {
+                    await storage.write(key: 'refreshToken', value: newRefreshToken);
+                  }
+                  
+                  debugPrint('Token refreshed successfully');
+                  return true;
+                }
+              }
+            } catch (e) {
+              debugPrint('Error refreshing token: $e');
+            }
+          }
+          
+          // If refresh fails, user needs to login again
+          debugPrint('Token refresh failed, user needs to login again');
+          return false;
         }
       } catch (e) {
-        debugPrint('Domain-based validation failed: $e');
+        debugPrint('Error during token validation: $e');
       }
-
-      // If domain validation fails, try IP-based validation
-      try {
-        debugPrint('Attempting token validation with IP URL');
-        final request = await client.getUrl(
-          Uri.parse('${AppConfig.apiIpUrl}/api/Employees/validate')
-        );
-        
-        // Add headers
-        request.headers.set('Authorization', 'Bearer $token');
-        request.headers.set('Accept', 'application/json');
-        request.headers.set('Host', 'albani.smartsoft-me.com');
-        
-        final response = await request.close();
-        if (response.statusCode == 200) {
-          debugPrint('Token validated successfully with IP URL');
-          return true;
-        }
-      } catch (e) {
-        debugPrint('IP-based validation failed: $e');
-      } finally {
-        client.close();
-      }
-
-      debugPrint('All token validation attempts failed');
+      
+      // If we reached here, the token could not be validated
+      debugPrint('Token validation failed');
       return false;
     } catch (e) {
       debugPrint('Error validating token: $e');

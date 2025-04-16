@@ -11,6 +11,10 @@ import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:dio/dio.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'dart:io';
 
 class ProjectDetailsScreen extends StatefulWidget {
   final dynamic projectId;
@@ -53,6 +57,9 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
   Map<String, List<Map<String, dynamic>>> _bucketFiles = {};
   Map<String, List<Map<String, dynamic>>> _bucketTasks = {};
   
+  // Set to keep track of deleted task IDs to ensure they don't reappear in UI
+  Set<String> _deletedTaskIds = {};
+  
   // Tab controller and tabs
   late TabController _tabController;
   List<Map<String, dynamic>> _tabs = [];
@@ -63,6 +70,9 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
   String _projectName = '';
   String _projectStatus = '';
   String _projectLocation = '';
+  
+  // Dialog context variable for safe dialog dismissal
+  BuildContext? _dialogContext;
   
   @override
   void initState() {
@@ -377,12 +387,26 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
         final tasks = filesAndTasks[1];
         
         debugPrint('Loaded ${files.length} files and ${tasks.length} tasks for bucket $bucketGuid');
+        debugPrint('Task IDs: ${tasks.map((t) => t['id'] ?? t['guid']).toList()}');
         
         if (!mounted) return;
         
+        // Update the state with the fresh data
         setState(() {
-          _bucketFiles[bucketGuid] = files;
-          _bucketTasks[bucketGuid] = tasks;
+          // Replace the entire map entries to ensure full refresh
+          _bucketFiles[bucketGuid] = List<Map<String, dynamic>>.from(files);
+          
+          // Filter out any tasks we know have been deleted
+          final filteredTasks = tasks.where((task) {
+            final taskId = task['id']?.toString();
+            final taskGuid = task['guid']?.toString();
+            return !(_deletedTaskIds.contains(taskId) || _deletedTaskIds.contains(taskGuid));
+          }).toList();
+          
+          _bucketTasks[bucketGuid] = List<Map<String, dynamic>>.from(filteredTasks);
+          
+          debugPrint('Updated UI with ${_bucketTasks[bucketGuid]?.length ?? 0} tasks for bucket $bucketGuid');
+          debugPrint('Filtered out ${tasks.length - filteredTasks.length} deleted tasks using _deletedTaskIds cache');
         });
         
         // Successfully loaded data, exit the retry loop
@@ -404,9 +428,15 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
           setState(() {
             _bucketFiles[bucketGuid] = _bucketFiles[bucketGuid] ?? [];
             _bucketTasks[bucketGuid] = _bucketTasks[bucketGuid] ?? [];
+            debugPrint('Initialized empty lists for bucket $bucketGuid');
           });
         }
       }
+    }
+    
+    // Force a rebuilding of the UI
+    if (mounted) {
+      setState(() {});
     }
   }
 
@@ -628,8 +658,11 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                     ),
                     TextButton.icon(
                       icon: const Icon(Icons.upload_file),
-                      label: const Text('UPLOAD'),
+                      label: const Text('UPLOAD FILE'),
                       onPressed: () async {
+                        // Store a reference to the context for safer usage
+                        final BuildContext outerContext = context;
+                        
                         try {
                           // Show file picker
                           final result = await FilePicker.platform.pickFiles();
@@ -638,13 +671,9 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                             final file = result.files.first;
                             if (file.path != null) {
                               // Show loading dialog
-                              showDialog(
-                                context: context,
-                                barrierDismissible: false,
-                                builder: (context) => const Center(
-                                  child: CircularProgressIndicator(),
-                                ),
-                              );
+                              if (mounted) {
+                                _showLoadingDialog(outerContext);
+                              }
                               
                               try {
                                 // Upload the file
@@ -657,23 +686,23 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                                 await _loadFilesAndTasksForBucket(bucketGuid);
                                 
                                 if (mounted) {
-                                  // Check if Navigator can be safely used
-                                  if (Navigator.of(context).canPop()) {
-                                    Navigator.pop(context); // Close loading dialog
-                                  }
-                                  ScaffoldMessenger.of(context).showSnackBar(
+                                  // Close loading dialog
+                                  _dismissDialog(outerContext);
+                                  
+                                  ScaffoldMessenger.of(outerContext).showSnackBar(
                                     const SnackBar(
                                       content: Text('File uploaded successfully'),
                                     ),
                                   );
                                 }
                               } catch (e) {
+                                debugPrint('Error uploading file: $e');
+                                
+                                // Close loading dialog
                                 if (mounted) {
-                                  // Check if Navigator can be safely used
-                                  if (Navigator.of(context).canPop()) {
-                                    Navigator.pop(context); // Close loading dialog
-                                  }
-                                  ScaffoldMessenger.of(context).showSnackBar(
+                                  _dismissDialog(outerContext);
+                                  
+                                  ScaffoldMessenger.of(outerContext).showSnackBar(
                                     SnackBar(
                                       content: Text('Failed to upload file: $e'),
                                     ),
@@ -685,7 +714,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                         } catch (e) {
                           debugPrint('Error picking file: $e');
                           if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
+                            ScaffoldMessenger.of(outerContext).showSnackBar(
                               SnackBar(
                                 content: Text('Failed to pick file: $e'),
                               ),
@@ -718,7 +747,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                       
                       return Card(
                         child: ListTile(
-                          leading: const Icon(Icons.insert_drive_file),
+                          leading: _getFileIcon(file['type'] ?? ''),
                           title: Text(
                             fileName,
                             style: const TextStyle(
@@ -732,48 +761,105 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                               IconButton(
                                 icon: const Icon(Icons.download),
                                 onPressed: () async {
+                                  // Store a reference to the context for safer usage
+                                  final BuildContext outerContext = context;
+                                  
                                   try {
-                                    final fileId = file['id'] ?? file['guid'];
-                                    if (fileId == null) {
-                                      throw Exception('File ID not found');
+                                    // Specifically get the GUID for file download, not the ID
+                                    final fileGuid = file['guid'];
+                                    if (fileGuid == null) {
+                                      throw Exception('File GUID not found. Download requires a GUID.');
                                     }
                                     
-                                    // Show loading dialog
-                                    showDialog(
-                                      context: context,
-                                      barrierDismissible: false,
-                                      builder: (context) => const Center(
-                                        child: CircularProgressIndicator(),
-                                      ),
+                                    // Get the file name from the file object
+                                    final fileName = file['name'] ?? 
+                                                  file['fileName'] ?? 
+                                                  file['title'] ?? 
+                                                  'downloaded_file';
+                                    
+                                    debugPrint('Starting direct download for file: $fileName with GUID: $fileGuid');
+                                    
+                                    // Show loading dialog with a message
+                                    if (mounted) {
+                                      _showLoadingDialog(outerContext);
+                                    }
+                                    
+                                    // Get auth token and base URL
+                                    final baseUrl = await _apiService.getBaseUrl();
+                                    final token = await _apiService.getAuthToken();
+                                    
+                                    // Construct the direct download URL
+                                    final downloadUrl = '$baseUrl/api/Attachments/DownloadAttachment?AttachmentGuid=$fileGuid';
+                                    debugPrint('Download URL: $downloadUrl');
+                                    
+                                    // Create a Dio instance with auth headers
+                                    final dio = Dio();
+                                    dio.options.headers['Authorization'] = 'Bearer $token';
+                                    
+                                    // Get the downloads directory
+                                    final directory = await getApplicationDocumentsDirectory();
+                                    final filePath = '${directory.path}/$fileName';
+                                    
+                                    // Check and request storage permissions on Android
+                                    if (Platform.isAndroid) {
+                                      final status = await Permission.storage.request();
+                                      if (!status.isGranted) {
+                                        throw Exception('Storage permission not granted');
+                                      }
+                                    }
+                                    
+                                    // Download the file
+                                    await dio.download(
+                                      downloadUrl,
+                                      filePath,
+                                      onReceiveProgress: (received, total) {
+                                        if (total != -1) {
+                                          final progress = (received / total * 100).toStringAsFixed(0);
+                                          debugPrint('Download progress: $progress%');
+                                        }
+                                      },
                                     );
                                     
-                                    // Get download URL
-                                    final downloadUrl = await _apiService.getFileDownloadUrl(fileId.toString());
-                                    
+                                    // Close loading dialog
                                     if (mounted) {
-                                      // Check if Navigator can be safely used
-                                      if (Navigator.of(context).canPop()) {
-                                        Navigator.pop(context); // Close loading dialog
-                                      }
-                                      
-                                      // Launch URL in browser
-                                      if (await canLaunchUrl(Uri.parse(downloadUrl))) {
-                                        await launchUrl(Uri.parse(downloadUrl));
-                                      } else {
-                                        throw Exception('Could not launch URL');
-                                      }
+                                      _dismissDialog(outerContext);
+                                    
+                                      // Show success message with path
+                                      ScaffoldMessenger.of(outerContext).showSnackBar(
+                                        SnackBar(
+                                          content: Text('File downloaded successfully to: $filePath'),
+                                          backgroundColor: Colors.green,
+                                          duration: const Duration(seconds: 5),
+                                          action: SnackBarAction(
+                                            label: 'OPEN',
+                                            onPressed: () async {
+                                              final file = File(filePath);
+                                              // Try to open the file
+                                              if (await file.exists()) {
+                                                final uri = Uri.file(filePath);
+                                                try {
+                                                  await launchUrl(uri);
+                                                } catch (e) {
+                                                  debugPrint('Cannot open downloaded file: $e');
+                                                }
+                                              }
+                                            },
+                                          ),
+                                        ),
+                                      );
                                     }
                                   } catch (e) {
-                                    debugPrint('Error downloading file: $e');
+                                    // Close loading dialog
                                     if (mounted) {
-                                      // Check if Navigator can be safely used
-                                      if (Navigator.of(context).canPop()) {
-                                        Navigator.pop(context); // Close loading dialog if open
-                                      }
-                                      ScaffoldMessenger.of(context).showSnackBar(
+                                      _dismissDialog(outerContext);
+                                      
+                                      debugPrint('Error in download process: $e');
+                                      ScaffoldMessenger.of(outerContext).showSnackBar(
                                         SnackBar(
-                                          content: Text('Failed to download file: $e'),
-                                        ),
+                                          content: Text('Error downloading file: $e'),
+                                          backgroundColor: Colors.red,
+                                          duration: const Duration(seconds: 5),
+                                        )
                                       );
                                     }
                                   }
@@ -782,28 +868,52 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                               IconButton(
                                 icon: const Icon(Icons.share),
                                 onPressed: () async {
+                                  // Store a reference to the context for safer usage
+                                  final BuildContext outerContext = context;
+                                  
                                   try {
-                                    final fileId = file['id'] ?? file['guid'];
-                                    if (fileId == null) {
-                                      throw Exception('File ID not found');
+                                    // Specifically get the GUID for file sharing, not the ID
+                                    final fileGuid = file['guid'];
+                                    if (fileGuid == null) {
+                                      throw Exception('File GUID not found. Sharing requires a GUID.');
                                     }
                                     
-                                    // Get download URL for sharing
-                                    final downloadUrl = await _apiService.getFileDownloadUrl(fileId.toString());
+                                    // Get the file name from the file object
+                                    final fileName = file['name'] ?? 
+                                                  file['fileName'] ?? 
+                                                  file['title'] ?? 
+                                                  'shared_file';
                                     
+                                    debugPrint('Starting file share for: $fileName with GUID: $fileGuid');
+                                    
+                                    // Show loading dialog
                                     if (mounted) {
-                                      // Share the URL
-                                      await Share.share(
-                                        'Check out this file: $downloadUrl',
-                                        subject: fileName,
-                                      );
+                                      _showLoadingDialog(outerContext);
                                     }
+                                    
+                                    // Use the dedicated API method to get the file share URL
+                                    final shareUrl = await _apiService.getFileShareUrl(fileGuid.toString());
+                                    debugPrint('Generated share URL: $shareUrl');
+                                    
+                                    // Close loading dialog 
+                                    if (mounted) {
+                                      _dismissDialog(outerContext);
+                                    }
+                                    
+                                    // Share the link to the file
+                                    final shareMessage = 'File: $fileName\nAccess at: $shareUrl';
+                                    await Share.share(shareMessage);
+                                    
                                   } catch (e) {
-                                    debugPrint('Error sharing file: $e');
+                                    // Close loading dialog if it's showing
                                     if (mounted) {
-                                      ScaffoldMessenger.of(context).showSnackBar(
+                                      _dismissDialog(outerContext);
+                                    
+                                      debugPrint('Error sharing file: $e');
+                                      ScaffoldMessenger.of(outerContext).showSnackBar(
                                         SnackBar(
                                           content: Text('Failed to share file: $e'),
+                                          backgroundColor: Colors.red,
                                         ),
                                       );
                                     }
@@ -813,9 +923,12 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                               IconButton(
                                 icon: const Icon(Icons.delete),
                                 onPressed: () async {
+                                  // Store a reference to the context for safer usage
+                                  final BuildContext outerContext = context;
+                                  
                                   // Show confirmation dialog
                                   final shouldDelete = await showDialog<bool>(
-                                    context: context,
+                                    context: outerContext,
                                     builder: (context) => AlertDialog(
                                       title: const Text('Delete File'),
                                       content: Text('Are you sure you want to delete "$fileName"?'),
@@ -834,47 +947,45 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                                   
                                   if (shouldDelete == true && mounted) {
                                     try {
-                                      final fileId = file['id'] ?? file['guid'];
-                                      if (fileId == null) {
-                                        throw Exception('File ID not found');
+                                      // Specifically get the GUID for file deletion, not the ID
+                                      final fileGuid = file['guid'];
+                                      if (fileGuid == null) {
+                                        throw Exception('File GUID not found. Deletion requires a GUID.');
                                       }
                                       
+                                      debugPrint('Attempting to delete file with GUID: $fileGuid');
+                                      
                                       // Show loading dialog
-                                      showDialog(
-                                        context: context,
-                                        barrierDismissible: false,
-                                        builder: (context) => const Center(
-                                          child: CircularProgressIndicator(),
-                                        ),
-                                      );
+                                      _showLoadingDialog(outerContext);
                                       
                                       // Delete the file
-                                      await _apiService.deleteFile(fileId.toString());
+                                      await _apiService.deleteFile(fileGuid.toString());
                                       
                                       // Refresh the bucket
                                       await _loadFilesAndTasksForBucket(bucketGuid);
                                       
                                       if (mounted) {
-                                        // Check if Navigator can be safely used
-                                        if (Navigator.of(context).canPop()) {
-                                          Navigator.pop(context); // Close loading dialog
-                                        }
-                                        ScaffoldMessenger.of(context).showSnackBar(
+                                        // Dismiss loading dialog
+                                        _dismissDialog(outerContext);
+                                        
+                                        ScaffoldMessenger.of(outerContext).showSnackBar(
                                           const SnackBar(
                                             content: Text('File deleted successfully'),
+                                            backgroundColor: Colors.green,
                                           ),
                                         );
                                       }
                                     } catch (e) {
                                       debugPrint('Error deleting file: $e');
+                                      
+                                      // Dismiss loading dialog
                                       if (mounted) {
-                                        // Check if Navigator can be safely used
-                                        if (Navigator.of(context).canPop()) {
-                                          Navigator.pop(context); // Close loading dialog
-                                        }
-                                        ScaffoldMessenger.of(context).showSnackBar(
+                                        _dismissDialog(outerContext);
+                                        
+                                        ScaffoldMessenger.of(outerContext).showSnackBar(
                                           SnackBar(
                                             content: Text('Failed to delete file: $e'),
+                                            backgroundColor: Colors.red,
                                           ),
                                         );
                                       }
@@ -972,6 +1083,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                   )
                 else
                   ListView.builder(
+                    key: ValueKey('tasks-${tasks.length}-${DateTime.now().millisecondsSinceEpoch}'),
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
                     itemCount: _sortAndFilterTasks(tasks, bucketGuid).length,
@@ -1108,99 +1220,130 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                                           ),
                                           TextButton(
                                             onPressed: () async {
-                                              Navigator.of(context).pop();
+                                              // Store a reference to the context for safer usage
+                                              final BuildContext outerContext = context;
+                                              
+                                              // Close the confirmation dialog
+                                              Navigator.of(outerContext).pop();
+                                              
+                                              // Prioritize GUID over numeric ID for deletion
+                                              final taskGuid = task['guid'];
+                                              final taskId = task['id'];
+                                              final deleteId = taskGuid ?? taskId;
+                                              
+                                              if (deleteId == null) {
+                                                if (mounted) {
+                                                  ScaffoldMessenger.of(outerContext).showSnackBar(
+                                                    const SnackBar(
+                                                      content: Text('Task ID not found'),
+                                                      backgroundColor: Colors.red,
+                                                    ),
+                                                  );
+                                                }
+                                                return;
+                                              }
+                                              
+                                              // Log for debugging
+                                              debugPrint('Deleting task with GUID: $taskGuid / ID: $taskId');
+                                              
+                                              // Show loading indicator
+                                              if (mounted) {
+                                                _showLoadingDialog(outerContext);
+                                              }
+                                              
+                                              // Store the task before removing it in case we need to restore it
+                                              final Map<String, dynamic> originalTask = Map<String, dynamic>.from(task);
+                                              
+                                              // Optimistically remove the task from local list first
+                                              if (mounted) {
+                                                setState(() {
+                                                  if (_bucketTasks.containsKey(bucketGuid)) {
+                                                    _bucketTasks[bucketGuid] = _bucketTasks[bucketGuid]!
+                                                        .where((t) => t['guid'] != taskGuid && t['id'] != taskId)
+                                                        .toList();
+                                                    debugPrint('DELETION: Task removed from local state. Remaining tasks: ${_bucketTasks[bucketGuid]?.length}');
+                                                  }
+                                                });
+                                              }
                                               
                                               try {
-                                                // Show loading dialog
-                                                showDialog(
-                                                  context: context,
-                                                  barrierDismissible: false,
-                                                  builder: (context) => const Center(
-                                                    child: CircularProgressIndicator(),
-                                                  ),
-                                                );
+                                                // Delete the task - Wait for longer timeout
+                                                await _apiService.deleteTask(deleteId.toString())
+                                                  .timeout(const Duration(seconds: 15));
                                                 
-                                                final taskId = task['id'] ?? task['guid'];
-                                                if (taskId == null) {
-                                                  throw Exception('Task ID not found');
-                                                }
+                                                // Add a short delay to ensure server sync
+                                                await Future.delayed(const Duration(seconds: 1));
                                                 
-                                                // Optimistically remove the task from local list first
+                                                // Close loading dialog with appropriate context checking
                                                 if (mounted) {
+                                                  _dismissDialog(outerContext);
+                                                
+                                                  // Show success message
+                                                  // Permanently track this task ID as deleted
+                                                  if (taskId != null) _deletedTaskIds.add(taskId.toString());
+                                                  if (taskGuid != null) _deletedTaskIds.add(taskGuid.toString());
+                                                  
+                                                  debugPrint('PERMANENT DELETION: Added task ID to _deletedTaskIds cache. Current size: ${_deletedTaskIds.length}');
+                                                  
+                                                  ScaffoldMessenger.of(outerContext).showSnackBar(
+                                                    SnackBar(
+                                                      content: Text('Task "$taskTitle" deleted'),
+                                                      backgroundColor: Colors.green,
+                                                    ),
+                                                  );
+                                                  
+                                                  // Multiple approaches to ensure UI refresh:
+                                                  
+                                                  // 1. First try immediate manual state update
                                                   setState(() {
-                                                    _bucketTasks[bucketGuid]?.removeWhere((t) => 
-                                                      t['id'] == taskId || t['guid'] == taskId);
+                                                    // Ensure we have the latest deleted task IDs reflected in the UI
+                                                    if (_bucketTasks.containsKey(bucketGuid)) {
+                                                      // Create a completely fresh list without the deleted task
+                                                      _bucketTasks[bucketGuid] = _bucketTasks[bucketGuid]!
+                                                          .where((t) => 
+                                                            (t['guid'] == null || t['guid'].toString() != taskGuid?.toString()) && 
+                                                            (t['id'] == null || t['id'].toString() != taskId?.toString()))
+                                                          .toList();
+                                                          
+                                                      debugPrint('SUCCESS: Manual task removal successful. Remaining tasks: ${_bucketTasks[bucketGuid]?.length}');
+                                                      
+                                                      // Force a complete rebuild of the task list
+                                                      _tabController.animateTo(_tabController.index);
+                                                    }
+                                                  });
+                                                  
+                                                  // 2. After the API call succeeds, force a refresh from the server
+                                                  _refreshBucketData(bucketGuid);
+                                                  
+                                                  // 3. Schedule another UI refresh shortly after server data is fetched
+                                                  Future.delayed(Duration(milliseconds: 500), () {
+                                                    if (mounted) {
+                                                      setState(() {
+                                                        debugPrint('SUCCESS: Delayed UI refresh after task deletion');
+                                                      });
+                                                    }
                                                   });
                                                 }
+                                              } catch (deleteError) {
+                                                debugPrint('Task deletion API error: $deleteError');
                                                 
-                                                // Delete the task - Wait for longer timeout
-                                                try {
-                                                  await _apiService.deleteTask(taskId.toString())
-                                                    .timeout(const Duration(seconds: 15));
-                                                  
-                                                  // Add a short delay to ensure server sync
-                                                  await Future.delayed(const Duration(seconds: 1));
-                                                  
-                                                  // Get task data for the bucket to sync with server
-                                                  if (mounted) {
-                                                    try {
-                                                      final fileBucketGuid = task['bucketGuid'] ?? task['bucketId'] ?? bucketGuid;
-                                                      await _loadFilesAndTasksForBucket(fileBucketGuid);
-                                                      debugPrint('Successfully synced with server after task deletion');
-                                                    } catch (syncError) {
-                                                      // If sync fails, it's ok, we've already removed the task locally
-                                                      debugPrint('Failed to sync with server after deletion: $syncError');
-                                                    }
-                                                    
-                                                    // Check if Navigator can be safely used
-                                                    if (Navigator.of(context).canPop()) {
-                                                      Navigator.pop(context); // Close loading dialog
-                                                    }
-                                                    
-                                                    ScaffoldMessenger.of(context).showSnackBar(
-                                                      SnackBar(
-                                                        content: Text('Task "$taskTitle" deleted'),
-                                                        backgroundColor: Colors.green,
-                                                      ),
-                                                    );
-                                                  }
-                                                } catch (deleteError) {
-                                                  debugPrint('Task deletion API error: $deleteError');
-                                                  
-                                                  // Add the task back to the list if API failed
-                                                  if (mounted) {
-                                                    setState(() {
-                                                      if (_bucketTasks.containsKey(bucketGuid)) {
-                                                        if (_bucketTasks[bucketGuid]?.any((t) => 
-                                                          t['id'] == taskId || t['guid'] == taskId) == false) {
-                                                          _bucketTasks[bucketGuid]?.add(task);
-                                                        }
-                                                      }
-                                                    });
-                                                    
-                                                    // Close loading dialog if open
-                                                    if (Navigator.of(context).canPop()) {
-                                                      Navigator.pop(context);
-                                                    }
-                                                    
-                                                    ScaffoldMessenger.of(context).showSnackBar(
-                                                      SnackBar(
-                                                        content: Text('Failed to delete task: $deleteError'),
-                                                        backgroundColor: Colors.red,
-                                                      ),
-                                                    );
-                                                  }
-                                                }
-                                              } catch (e) {
-                                                debugPrint('General error during task deletion: $e');
+                                                // Close loading dialog safely
                                                 if (mounted) {
-                                                  // Check if Navigator can be safely used
-                                                  if (Navigator.of(context).canPop()) {
-                                                    Navigator.pop(context); // Close loading dialog
-                                                  }
-                                                  ScaffoldMessenger.of(context).showSnackBar(
+                                                  _dismissDialog(outerContext);
+                                                
+                                                  // Add the task back to the list if API failed
+                                                  setState(() {
+                                                    if (_bucketTasks.containsKey(bucketGuid)) {
+                                                      // Restore the original task
+                                                      _bucketTasks[bucketGuid] = [..._bucketTasks[bucketGuid]!, originalTask];
+                                                      debugPrint('ERROR: Task restored to local state after API error. Task count: ${_bucketTasks[bucketGuid]?.length}');
+                                                    }
+                                                  });
+                                                  
+                                                  // Show error message
+                                                  ScaffoldMessenger.of(outerContext).showSnackBar(
                                                     SnackBar(
-                                                      content: Text('Failed to delete task: $e'),
+                                                      content: Text('Failed to delete task: $deleteError'),
                                                       backgroundColor: Colors.red,
                                                     ),
                                                   );
@@ -1679,11 +1822,27 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
   }
 
   List<Map<String, dynamic>> _sortAndFilterTasks(List<Map<String, dynamic>> tasks, String bucketGuid) {
-    // Create a copy of the tasks list to avoid modifying the original
-    final List<Map<String, dynamic>> filteredTasks = List.from(tasks);
+    // Debugging for task count
+    debugPrint('FILTER: Processing ${tasks.length} tasks for bucket $bucketGuid');
     
-    // Apply filters
-    var result = filteredTasks.where((task) {
+    // Create a fresh copy of the tasks list to avoid modifying the original
+    final List<Map<String, dynamic>> filteredTasks = List<Map<String, dynamic>>.from(tasks);
+    
+    // First filter out deleted tasks
+    var tasksWithoutDeleted = filteredTasks.where((task) {
+      final taskId = task['id']?.toString();
+      final taskGuid = task['guid']?.toString();
+      
+      // Skip this task if it's in our deleted tasks set
+      if ((taskId != null && _deletedTaskIds.contains(taskId)) || 
+          (taskGuid != null && _deletedTaskIds.contains(taskGuid))) {
+        return false;
+      }
+      return true;
+    }).toList();
+    
+    // Apply standard filters
+    var result = tasksWithoutDeleted.where((task) {
       final String taskTitle = _getSafeString(task['title']) ?? _getSafeString(task['name']) ?? 'Unnamed Task';
       final String taskDesc = _getSafeString(task['description']) ?? _getSafeString(task['desc']) ?? '';
       final String taskStatus = _getSafeString(task['status']) ?? 'pending';
@@ -1791,6 +1950,84 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
         return 1;
       default:
         return 0;
+    }
+  }
+
+  // Show a loading dialog and store its context for safer dismissal
+  void _showLoadingDialog(BuildContext context) {
+    if (!mounted) return;
+    
+    // Clear any existing dialog context
+    _dialogContext = null;
+    
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        // Store the dialog context for later use
+        _dialogContext = dialogContext;
+        return const Center(
+          child: CircularProgressIndicator(),
+        );
+      },
+    );
+  }
+
+  // Safely dismiss dialogs when the widget might be deactivated
+  void _dismissDialog(BuildContext context) {
+    try {
+      // If we have a cached dialog context that is still valid, use it
+      if (_dialogContext != null) {
+        // Use a safer approach that doesn't depend on calling Navigator.canPop
+        // which can cause "Looking up a deactivated widget's ancestor" error
+        Navigator.of(_dialogContext!, rootNavigator: true).pop();
+        debugPrint('Dialog dismissed using cached context');
+        _dialogContext = null;
+        return;
+      }
+      
+      // Fall back to using provided context if we're still mounted
+      // Skip the Navigator.canPop check which is what causes the error
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        debugPrint('Dialog dismissed using provided context');
+      }
+    } catch (e) {
+      debugPrint('Error dismissing dialog: $e');
+      // Dialog may already be closed, just ignore
+    }
+  }
+
+  // Refresh data for a specific bucket
+  Future<void> _refreshBucketData(String bucketGuid) async {
+    if (!mounted) return;
+    
+    try {
+      debugPrint('REFRESH: Starting data refresh for bucket: $bucketGuid');
+      
+      // First try to get fresh data from the server
+      await _loadFilesAndTasksForBucket(bucketGuid);
+      
+      // Force a UI update with a complete state refresh
+      if (mounted) {
+        setState(() {
+          // Create a completely new copy of the tasks list
+          if (_bucketTasks.containsKey(bucketGuid)) {
+            _bucketTasks[bucketGuid] = List<Map<String, dynamic>>.from(_bucketTasks[bucketGuid] ?? []);
+          }
+          debugPrint('REFRESH: Forced complete UI refresh after bucket data reload. Task count: ${_bucketTasks[bucketGuid]?.length}');
+        });
+      }
+    } catch (e) {
+      debugPrint('ERROR in refreshBucketData: $e');
+      
+      // Even if the refresh fails, force a UI update to make sure
+      // the deleted task remains removed from the view
+      if (mounted) {
+        setState(() {
+          debugPrint('REFRESH: Forced UI refresh after failed bucket reload');
+        });
+      }
     }
   }
 } 

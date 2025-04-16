@@ -9,6 +9,7 @@ import 'auth_service.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
+import 'package:http_parser/http_parser.dart';
 
 class ApiService {
   final String _baseUrl = AppConfig.apiBaseUrl;
@@ -1258,203 +1259,306 @@ class ApiService {
     }
   }
   
-  // Update an existing task
+  // Update an existing task with multiple approaches
   Future<Map<String, dynamic>> updateTask(Map<String, dynamic> taskData) async {
     try {
       if (!await hasInternetConnection()) {
         throw Exception('No internet connection');
       }
       
-      final taskId = taskData['id'] ?? taskData['guid'];
-      if (taskId == null) {
-        throw Exception('Task ID is required for update');
+      // First try to get the GUID, then fall back to numeric id if needed
+      final String? taskGuid = taskData['guid']?.toString();
+      final String? taskId = taskData['id']?.toString();
+      
+      // For API operations, strongly prefer the GUID if available
+      final String identifier = taskGuid ?? taskId ?? '';
+      
+      if (identifier.isEmpty) {
+        throw Exception('Task ID or GUID is required for update');
       }
       
-      debugPrint('Updating task: $taskId');
-      debugPrint('Task update data: $taskData');
+      debugPrint('Updating task with identifier: $identifier');
+      debugPrint('Task data: $taskData');
       
-      // Format the task data as expected by the API
-      final apiTaskData = {
-        'command': {
-          'title': taskData['title'],
-          'description': taskData['description'] ?? '',
-          'status': taskData['status'] ?? 'Pending',
-          'priority': taskData['priority'] ?? 'Medium',
-          'assignedTo': taskData['assignedTo'],
-          'bucketGuid': taskData['bucketId'],
-          'dueDate': taskData['dueDate'],
-        }
-      };
-      
-      // Print the request data for debugging
-      debugPrint('API request data: ${jsonEncode(apiTaskData)}');
-      
-      // Try first implementation - standard API endpoint
+      // APPROACH 1: Try to update directly with PUT first
       try {
-        final response = await put('api/BucketTasks/$taskId', apiTaskData);
+        debugPrint('Attempting direct task update with PUT');
         
-        debugPrint('Task update response: $response');
-        
-        if (response != null) {
-          Map<String, dynamic> updatedTask;
-          
-          if (response is Map) {
-            if (response['data'] != null) {
-              updatedTask = Map<String, dynamic>.from(response['data']);
-            } else {
-              updatedTask = Map<String, dynamic>.from(response);
-            }
-            debugPrint('Task updated successfully: ${updatedTask['id'] ?? updatedTask['guid']}');
-            return updatedTask;
+        // Create update command
+        final updateData = {
+          'command': {
+            'guid': taskGuid,
+            'id': taskId,
+            'title': taskData['title'],
+            'description': taskData['description'] ?? '',
+            'status': taskData['status'] ?? 'Pending',
+            'priority': taskData['priority'] ?? 'Medium',
+            'assignedTo': taskData['assignedTo']?.toString(),
+            'bucketGuid': taskData['bucketId'] ?? taskData['bucketGuid'],
+            'dueDate': taskData['dueDate'],
           }
-        }
-      } catch (e) {
-        debugPrint('First task update attempt failed: $e, trying alternative method');
-      }
-      
-      // Try second implementation - alternative endpoint format
-      try {
-        final alternativeData = {
-          'title': taskData['title'],
-          'description': taskData['description'] ?? '',
-          'status': taskData['status'] ?? 'Pending',
-          'priority': taskData['priority'] ?? 'Medium',
-          'assignedTo': taskData['assignedTo'],
-          'bucketGuid': taskData['bucketId'],
-          'dueDate': taskData['dueDate'],
         };
         
-        final alternativeResponse = await _dio.put(
-          '/api/BucketTasks/UpdateTask/$taskId',
-          data: alternativeData,
+        // Log the update data
+        debugPrint('Update data: ${jsonEncode(updateData)}');
+        
+        // GET token for auth
+        final token = await storage.read(key: 'accessToken');
+        
+        // Attempt PUT request
+        final response = await _dio.put(
+          '/api/BucketTasks/${taskGuid ?? taskId}',
+          data: updateData,
           options: Options(
-            followRedirects: true,
-            validateStatus: (status) => status! < 500,
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            validateStatus: (status) => true, // Accept any status to log properly
+            receiveTimeout: Duration(seconds: 30),
           ),
         );
         
-        debugPrint('Alternative task update response: ${alternativeResponse.statusCode}');
+        debugPrint('Direct update response status: ${response.statusCode}');
+        debugPrint('Direct update response data: ${response.data}');
         
-        if (alternativeResponse.statusCode! >= 200 && alternativeResponse.statusCode! < 300) {
-          Map<String, dynamic> updatedTask;
+        // Check if update was successful
+        if (response.statusCode! >= 200 && response.statusCode! < 300) {
+          debugPrint('Task updated successfully with direct PUT');
           
-          if (alternativeResponse.data is Map) {
-            updatedTask = Map<String, dynamic>.from(alternativeResponse.data);
+          // Return the updated task from the response or construct it
+          if (response.data is Map) {
+            // Extract task data from response
+            Map<String, dynamic> updatedTask;
+            if (response.data['data'] != null) {
+              updatedTask = Map<String, dynamic>.from(response.data['data']);
+            } else {
+              updatedTask = Map<String, dynamic>.from(response.data);
+            }
+            
+            debugPrint('Returning updated task from response');
+            return updatedTask;
           } else {
-            updatedTask = {
-              ...alternativeData,
-              'id': taskId,
-              'guid': taskId,
+            // If no proper response, enhance the input data and return it
+            debugPrint('Constructing result from input data');
+            return {
+              ...taskData,
               'updatedAt': DateTime.now().toIso8601String(),
             };
           }
-          
-          debugPrint('Task updated successfully via alternative method');
-          return updatedTask;
         }
+        
+        debugPrint('Direct PUT update failed, falling back to delete-then-create');
       } catch (e) {
-        debugPrint('Alternative task update also failed: $e');
+        debugPrint('Error with direct task update: $e');
+        debugPrint('Falling back to delete-then-create approach');
       }
       
-      throw Exception('Failed to update task: All methods failed');
+      // APPROACH 2: DELETE then CREATE as fallback
+      debugPrint('===== Starting delete-then-create approach =====');
+      
+      // Step 1: Delete the existing task if possible
+      if (taskGuid != null) {
+        try {
+          debugPrint('Deleting existing task with GUID: $taskGuid');
+          await deleteTask(taskGuid);
+          debugPrint('Successfully deleted old task');
+        } catch (e) {
+          debugPrint('Warning: Failed to delete the old task: $e');
+          debugPrint('Continuing with create anyway');
+        }
+      } else {
+        debugPrint('Skipping delete step since we don\'t have a valid GUID');
+      }
+      
+      // Step 2: Create a new task with the updated data
+      final String bucketId = taskData['bucketId']?.toString() ?? 
+                              taskData['bucketGuid']?.toString() ?? '';
+      
+      if (bucketId.isEmpty) {
+        throw Exception('Bucket ID is required for task update');
+      }
+      
+      // Prepare task data for the create operation
+      final Map<String, dynamic> newTaskData = {
+        'title': taskData['title'],
+        'description': taskData['description'] ?? '',
+        'status': taskData['status'] ?? 'Pending',
+        'priority': taskData['priority'] ?? 'Medium',
+        'assignedTo': taskData['assignedTo']?.toString(),
+        'bucketId': bucketId, 
+        'bucketGuid': bucketId,
+        'dueDate': taskData['dueDate'],
+        'projectId': taskData['projectId']?.toString(),
+        'projectName': taskData['projectName'],
+        'bucketName': taskData['bucketName'],
+      };
+      
+      debugPrint('Creating new task with data: $newTaskData');
+      
+      // Create a new task using the existing createTask method
+      final newTask = await createTask(newTaskData);
+      
+      // Copy additional fields from the original task if needed
+      if (taskGuid != null && newTask['guid'] == null) {
+        newTask['guid'] = taskGuid; // Preserve original GUID for reference
+      }
+      
+      debugPrint('Successfully created new task with ID: ${newTask['id'] ?? newTask['guid']}');
+      
+      // Return the newly created task
+      return newTask;
     } catch (e) {
       debugPrint('Error updating task: $e');
       throw Exception('Failed to update task: $e');
     }
   }
   
-  // Delete a task
+  // Delete a task using the correct API endpoint with GUID
   Future<void> deleteTask(String taskId) async {
     try {
       if (!await hasInternetConnection()) {
         throw Exception('No internet connection');
       }
       
-      // Ensure taskId is a string
-      final String taskIdStr = taskId.toString();
+      debugPrint('Task delete request for ID: $taskId');
       
-      debugPrint('Deleting task with ID: $taskIdStr');
-      
-      // Create request exactly like the website does
-      final data = jsonEncode({'guid': taskIdStr});
-      debugPrint('Request payload: $data');
-      
-      // Get the token directly for debugging
+      // Get the token for authentication
       final token = await storage.read(key: 'accessToken');
-      debugPrint('Using token: ${token?.substring(0, min(10, token?.length ?? 0))}...');
-      
-      // Maximum number of retries
-      const int maxRetries = 2;
-      int retryCount = 0;
-      Exception? lastException;
-      
-      while (retryCount <= maxRetries) {
-        try {
-          // Use raw http client instead of Dio for most direct approach
-          final response = await http.delete(
-            Uri.parse('$_baseUrl/api/BucketTasks/DeleteTask'),
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-              'Authorization': 'Bearer $token',
-            },
-            body: data,
-          );
-          
-          debugPrint('Delete task response status: ${response.statusCode}');
-          debugPrint('Delete task response body: ${response.body}');
-          
-          if (response.statusCode >= 200 && response.statusCode < 300) {
-            debugPrint('Task successfully deleted');
-            return;
-          }
-          
-          // If server returned an error, try alternative approach with Dio
-          if (retryCount < maxRetries) {
-            debugPrint('Server returned ${response.statusCode}, trying alternative approach');
-            
-            // Try with Dio client
-            final dioResponse = await _dio.delete(
-              '/api/BucketTasks/DeleteTask',
-              data: {'guid': taskIdStr},
-              options: Options(
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Accept': 'application/json',
-                },
-                followRedirects: true,
-                validateStatus: (status) => true, // Accept any status code for logging
-              ),
-            );
-            
-            debugPrint('Alternative delete response: ${dioResponse.statusCode}');
-            
-            if (dioResponse.statusCode! >= 200 && dioResponse.statusCode! < 300) {
-              debugPrint('Task successfully deleted using alternative method');
-              return;
-            }
-          }
-          
-          lastException = Exception('Failed to delete task: Server returned ${response.statusCode}');
-        } catch (e) {
-          debugPrint('Error during delete attempt ${retryCount + 1}: $e');
-          lastException = Exception('Failed to delete task: $e');
-        }
-        
-        // Increment retry count and delay before trying again
-        retryCount++;
-        if (retryCount <= maxRetries) {
-          final delay = Duration(milliseconds: 500 * retryCount);
-          debugPrint('Retrying in ${delay.inMilliseconds}ms...');
-          await Future.delayed(delay);
-        }
+      if (token == null) {
+        throw Exception('No authentication token found');
       }
       
-      // If we reached here, all attempts failed
-      throw lastException ?? Exception('Failed to delete task after $maxRetries retries');
+      // Check if taskId is already in GUID format (contains hyphens)
+      final bool isGuidFormat = taskId.contains('-');
+      
+      if (!isGuidFormat) {
+        debugPrint('WARNING: Task deletion requires a GUID, but received numeric ID: $taskId');
+        debugPrint('Please update your code to use the task GUID instead of numeric ID for deletion');
+        throw Exception('Task deletion requires a GUID format ID, not a numeric ID');
+      }
+      
+      debugPrint('Using GUID format ID for deletion: $taskId');
+      
+      // Try with domain URL first
+      try {
+        debugPrint('Attempting task deletion with domain URL');
+        
+        final response = await _dio.delete(
+          '/api/BucketTasks',
+          queryParameters: {'Guid': taskId},
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            validateStatus: (status) => true, // Accept any status to log all responses
+          ),
+        );
+        
+        // Log full response details for debugging
+        debugPrint('Domain URL task deletion response:');
+        debugPrint('- Status code: ${response.statusCode}');
+        debugPrint('- Response data: ${response.data}');
+        debugPrint('- Response headers: ${response.headers}');
+        
+        if (response.statusCode! >= 200 && response.statusCode! < 300) {
+          debugPrint('Task deletion successful with domain URL');
+          return;
+        } else {
+          debugPrint('Task deletion failed with domain URL, status code: ${response.statusCode}');
+        }
+      } catch (e) {
+        debugPrint('Error with domain URL task deletion: $e');
+      }
+      
+      // Try with IP URL as fallback
+      try {
+        debugPrint('Attempting task deletion with IP URL');
+        final String originalBaseUrl = _dio.options.baseUrl;
+        _dio.options.baseUrl = AppConfig.apiIpUrl;
+        
+        final response = await _dio.delete(
+          '/api/BucketTasks',
+          queryParameters: {'Guid': taskId},
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'Host': AppConfig.apiHost,
+            },
+            validateStatus: (status) => true, // Accept any status to log all responses
+          ),
+        );
+        
+        // Reset base URL
+        _dio.options.baseUrl = originalBaseUrl;
+        
+        // Log full response details for debugging
+        debugPrint('IP URL task deletion response:');
+        debugPrint('- Status code: ${response.statusCode}');
+        debugPrint('- Response data: ${response.data}');
+        debugPrint('- Response headers: ${response.headers}');
+        
+        if (response.statusCode! >= 200 && response.statusCode! < 300) {
+          debugPrint('Task deletion successful with IP URL');
+          return;
+        } else {
+          debugPrint('Task deletion failed with IP URL, status code: ${response.statusCode}');
+        }
+      } catch (e) {
+        debugPrint('Error with IP URL task deletion: $e');
+      }
+      
+      // Try with a different endpoint as last resort
+      try {
+        debugPrint('Attempting task deletion with alternative endpoint');
+        
+        final response = await _dio.delete(
+          '/api/BucketTasks/DeleteTask',
+          queryParameters: {'Guid': taskId},
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            validateStatus: (status) => true, // Accept any status to log all responses
+          ),
+        );
+        
+        // Log full response details for debugging
+        debugPrint('Alternative endpoint task deletion response:');
+        debugPrint('- Status code: ${response.statusCode}');
+        debugPrint('- Response data: ${response.data}');
+        
+        if (response.statusCode! >= 200 && response.statusCode! < 300) {
+          debugPrint('Task deletion successful with alternative endpoint');
+          return;
+        } else {
+          debugPrint('Task deletion failed with alternative endpoint, status code: ${response.statusCode}');
+        }
+      } catch (e) {
+        debugPrint('Error with alternative endpoint task deletion: $e');
+      }
+      
+      throw Exception('All task deletion approaches failed');
     } catch (e) {
-      debugPrint('Error deleting task: $e');
-      throw Exception('Failed to delete task: $e');
+      debugPrint('=== API Error Details ===');
+      if (e is DioException) {
+        debugPrint('Error Type: ${e.type}');
+        debugPrint('Error Message: ${e.message}');
+        debugPrint('Status Code: ${e.response?.statusCode}');
+        debugPrint('Response Data: ${e.response?.data}');
+      } else {
+        debugPrint('Error: $e');
+      }
+      
+      debugPrint('Task deletion failed: $e');
+      throw Exception('Error deleting task: $e');
     }
   }
   
@@ -1466,6 +1570,14 @@ class ApiService {
       }
       
       debugPrint('Getting download URL for file: $fileId');
+      
+      // Check if the fileId appears to be a GUID format (has hyphens and proper length)
+      if (fileId.contains('-') && fileId.length > 30) {
+        // For GUID format IDs, directly use the DownloadAttachment endpoint
+        final directUrl = '$_baseUrl/api/Attachments/DownloadAttachment?AttachmentGuid=$fileId';
+        debugPrint('Using direct attachment download URL with GUID: $directUrl');
+        return directUrl;
+      }
       
       // Try first implementation
       try {
@@ -1521,7 +1633,10 @@ class ApiService {
         debugPrint('Alternative download URL attempt failed: $e');
       }
       
-      throw Exception('No valid download URL found for file');
+      // Final fallback - use the direct AttachmentGuid download URL
+      final fallbackUrl = '$_baseUrl/api/Attachments/DownloadAttachment?AttachmentGuid=$fileId';
+      debugPrint('Using fallback direct attachment download URL: $fallbackUrl');
+      return fallbackUrl;
     } catch (e) {
       debugPrint('Error getting file download URL: $e');
       throw Exception('Failed to get download URL: $e');
@@ -1538,56 +1653,131 @@ class ApiService {
       debugPrint('Uploading file to bucket: $bucketId');
       debugPrint('File path: $filePath');
       
+      // Get the file name from the path
+      final fileName = filePath.split('/').last;
+      
       // Create form data with the file
       final formData = FormData.fromMap({
         'bucketGuid': bucketId,
-        'file': await MultipartFile.fromFile(filePath),
+        'file': await MultipartFile.fromFile(
+          filePath,
+          filename: fileName,
+          contentType: MediaType.parse('application/octet-stream'), // Or derive from file extension
+        ),
       });
       
-      // Try first implementation
+      // Make sure we have current headers and URL
+      final headers = await _getHeaders();
+      final baseUrl = await getBaseUrl();
+      
+      // Add specific headers for multipart uploads, but retain auth
+      headers['Content-Type'] = 'multipart/form-data';
+      
+      // Print request details for debugging
+      debugPrint('Making file upload request to: $baseUrl/api/Attachments/AddFile');
+      debugPrint('Headers: $headers');
+      debugPrint('FormData: bucketGuid=$bucketId, filename=$fileName');
+      
+      // First try the correct endpoint as specified in the API
       try {
         final response = await _dio.post(
-          '/api/Attachments/Upload',
+          '$baseUrl/api/Attachments/AddFile',
           data: formData,
           options: Options(
+            headers: headers,
             followRedirects: true,
             validateStatus: (status) => status! < 500,
           ),
         );
         
         debugPrint('Upload response: ${response.statusCode}');
+        debugPrint('Response data: ${response.data}');
         
         if (response.statusCode! >= 200 && response.statusCode! < 300) {
           if (response.data is Map) {
             final uploadedFile = Map<String, dynamic>.from(response.data);
             debugPrint('File uploaded successfully: ${uploadedFile['id'] ?? uploadedFile['guid']}');
             return uploadedFile;
+          } else if (response.data is String && response.data.toString().isNotEmpty) {
+            try {
+              // Try to parse JSON string if we get a string response
+              final uploadedFile = jsonDecode(response.data);
+              return Map<String, dynamic>.from(uploadedFile);
+            } catch (e) {
+              debugPrint('Could not parse response as JSON: $e');
+            }
           }
         }
       } catch (e) {
-        debugPrint('First upload attempt failed: $e, trying alternative method');
+        debugPrint('File upload failed with correct endpoint: $e, trying fallback methods');
       }
       
-      // Try alternative endpoint
+      // Try fallback implementation
       try {
         final response = await _dio.post(
-          '/api/Attachments/UploadFile',
+          '$baseUrl/api/Attachments/Upload',
           data: formData,
           options: Options(
+            headers: headers,
             followRedirects: true,
             validateStatus: (status) => status! < 500,
           ),
         );
+        
+        debugPrint('Fallback upload response: ${response.statusCode}');
+        debugPrint('Response data: ${response.data}');
+        
+        if (response.statusCode! >= 200 && response.statusCode! < 300) {
+          if (response.data is Map) {
+            final uploadedFile = Map<String, dynamic>.from(response.data);
+            debugPrint('File uploaded successfully with fallback endpoint');
+            return uploadedFile;
+          } else if (response.data is String && response.data.toString().isNotEmpty) {
+            try {
+              // Try to parse JSON string if we get a string response
+              final uploadedFile = jsonDecode(response.data);
+              return Map<String, dynamic>.from(uploadedFile);
+            } catch (e) {
+              debugPrint('Could not parse response as JSON: $e');
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('Fallback upload also failed: $e');
+      }
+      
+      // Try alternative endpoint as last resort
+      try {
+        final response = await _dio.post(
+          '$baseUrl/api/Attachments/UploadFile',
+          data: formData,
+          options: Options(
+            headers: headers,
+            followRedirects: true,
+            validateStatus: (status) => status! < 500,
+          ),
+        );
+        
+        debugPrint('Alternative upload response: ${response.statusCode}');
+        debugPrint('Response data: ${response.data}');
         
         if (response.statusCode! >= 200 && response.statusCode! < 300) {
           if (response.data is Map) {
             final uploadedFile = Map<String, dynamic>.from(response.data);
             debugPrint('File uploaded successfully via alternative method');
             return uploadedFile;
+          } else if (response.data is String && response.data.toString().isNotEmpty) {
+            try {
+              // Try to parse JSON string if we get a string response
+              final uploadedFile = jsonDecode(response.data);
+              return Map<String, dynamic>.from(uploadedFile);
+            } catch (e) {
+              debugPrint('Could not parse response as JSON: $e');
+            }
           }
         }
       } catch (e) {
-        debugPrint('Alternative upload also failed: $e');
+        debugPrint('All upload methods failed: $e');
       }
       
       throw Exception('Failed to upload file: All methods failed');
@@ -1638,6 +1828,45 @@ class ApiService {
     } catch (e) {
       debugPrint('Error deleting file: $e');
       throw Exception('Failed to delete file: $e');
+    }
+  }
+
+  // Get the base URL
+  Future<String> getBaseUrl() async {
+    return _baseUrl;
+  }
+
+  // Get the authentication token
+  Future<String?> getAuthToken() async {
+    try {
+      return await storage.read(key: 'accessToken');
+    } catch (e) {
+      debugPrint('Error reading auth token: $e');
+      return null;
+    }
+  }
+
+  // Get a file sharing URL
+  Future<String> getFileShareUrl(String fileId) async {
+    try {
+      if (!await hasInternetConnection()) {
+        throw Exception('No internet connection');
+      }
+      
+      debugPrint('Getting share URL for file: $fileId');
+      
+      // Check if the fileId appears to be a GUID format (has hyphens and proper length)
+      if (fileId.contains('-') && fileId.length > 30) {
+        // For GUID format IDs, directly construct the ShareAttachment endpoint URL
+        final shareUrl = '$_baseUrl/api/Attachments/ShareAttachment?AttachmentGuid=$fileId';
+        debugPrint('Generated file share URL with GUID: $shareUrl');
+        return shareUrl;
+      } else {
+        throw Exception('File ID must be in GUID format for sharing');
+      }
+    } catch (e) {
+      debugPrint('Error getting file share URL: $e');
+      throw Exception('Failed to get share URL: $e');
     }
   }
 }

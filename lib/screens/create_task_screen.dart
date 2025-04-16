@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:math';
 import '../services/api_service.dart';
+import '../utils/dropdown_helpers.dart';
 
 class CreateTaskScreen extends StatefulWidget {
   final String? bucketId;
@@ -33,7 +34,7 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
   
   String? _selectedStatus = 'Pending';
   String? _selectedAssignee;
-  String? _selectedPriority = 'None';
+  String? _selectedPriority = 'Medium';
   DateTime _expiryDate = DateTime.now().add(const Duration(days: 7));
   
   bool _isLoading = false;
@@ -44,23 +45,31 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
   @override
   void initState() {
     super.initState();
-    _loadProjectEmployees();
     
-    if (widget.isEditMode && widget.existingTask != null) {
+    // Set defaults first
+    if (widget.existingTask != null) {
       _titleController.text = widget.existingTask!['title'] ?? '';
       _descriptionController.text = widget.existingTask!['description'] ?? '';
-      _selectedStatus = widget.existingTask!['status'] ?? 'Pending';
+      _selectedStatus = DropdownHelpers.normalizeTaskStatus(widget.existingTask!['status']);
       _selectedAssignee = widget.existingTask!['assignedTo']?.toString();
-      _selectedPriority = widget.existingTask!['priority'] ?? 'None';
+      _selectedPriority = DropdownHelpers.normalizePriority(widget.existingTask!['priority']);
       
       if (widget.existingTask!['dueDate'] != null) {
         try {
           _expiryDate = DateTime.parse(widget.existingTask!['dueDate']);
         } catch (e) {
-          debugPrint('Error parsing due date: $e');
+          debugPrint('Error parsing expiry date: $e');
         }
       }
+    } else {
+      // Initialize dropdowns with default values for new tasks
+      _selectedStatus = 'Pending'; 
+      _selectedPriority = 'Medium';
+      _selectedAssignee = null; // This will be populated after employees are loaded
     }
+    
+    // Load employees for the bucket
+    _loadProjectEmployees();
   }
 
   Future<void> _loadProjectEmployees() async {
@@ -135,32 +144,64 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
     }
     
     try {
-      // Create task data
+      // First determine if we're in edit mode and have an existing task ID
+      final bool isEditMode = widget.isEditMode && widget.existingTask != null;
+      final String? existingId = isEditMode 
+          ? (widget.existingTask!['id']?.toString() ?? widget.existingTask!['guid']?.toString())
+          : null;
+          
+      if (isEditMode && existingId != null) {
+        debugPrint('EDIT MODE: Updating existing task with ID: $existingId');
+      } else {
+        debugPrint('CREATE MODE: Creating a new task');
+      }
+      
+      // Create base task data
       final taskData = {
         'title': _titleController.text.trim(),
         'description': _descriptionController.text.trim(),
         'status': _selectedStatus,
-        'assignedTo': _selectedAssignee,
+        'assignedTo': _selectedAssignee?.toString(), // Ensure it's a string
         'priority': _selectedPriority,
         'dueDate': _expiryDate.toIso8601String(),
-        'bucketId': widget.bucketId,
+        'bucketId': widget.bucketId?.toString(), // Ensure it's a string
+        'bucketGuid': widget.bucketId?.toString(), // Add both forms of bucket ID
         'bucketName': widget.bucketName,
-        'projectId': widget.projectId,
+        'projectId': widget.projectId.toString(), // Ensure it's a string
         'projectName': widget.projectName,
       };
       
-      if (widget.isEditMode && widget.existingTask != null) {
-        taskData['id'] = widget.existingTask!['id'];
-        taskData['guid'] = widget.existingTask!['guid'];
-        taskData['createdAt'] = widget.existingTask!['createdAt'];
+      // If we're updating an existing task, make sure the ID is included and correctly formatted
+      if (isEditMode) {
+        // Include both id and guid to cover all bases
+        if (widget.existingTask!['id'] != null) {
+          taskData['id'] = widget.existingTask!['id'].toString();
+          debugPrint('Using existing ID for update: ${taskData['id']} (type: ${taskData['id'].runtimeType})');
+        }
+        
+        if (widget.existingTask!['guid'] != null) {
+          taskData['guid'] = widget.existingTask!['guid'].toString();
+          debugPrint('Using existing GUID for update: ${taskData['guid']} (type: ${taskData['guid'].runtimeType})');
+        }
+        
+        // Add other identifiers that might help the API recognize this as an update
+        taskData['isUpdate'] = 'true';
+        taskData['updateExisting'] = 'true';
+        
+        // Preserve creation date if available
+        if (widget.existingTask!['createdAt'] != null) {
+          taskData['createdAt'] = widget.existingTask!['createdAt'];
+        }
       }
       
-      debugPrint('${widget.isEditMode ? "Updating" : "Creating"} task with data: $taskData');
+      debugPrint('${isEditMode ? "Updating" : "Creating"} task with data: $taskData');
       
       // Save or update task using the API
-      final resultTask = widget.isEditMode
+      final resultTask = isEditMode
           ? await _apiService.updateTask(taskData)
           : await _apiService.createTask(taskData);
+      
+      debugPrint('Task ${isEditMode ? "update" : "creation"} result: $resultTask');
       
       // Call the callback
       widget.onTaskCreated(resultTask);
@@ -170,7 +211,7 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Task ${widget.isEditMode ? "updated" : "created"} successfully'),
+            content: Text('Task ${isEditMode ? "updated" : "created"} successfully'),
           ),
         );
       }
@@ -205,8 +246,10 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
                     const SizedBox(height: 8),
                     Text('Bucket ID: ${widget.bucketId}'),
                     Text('Project ID: ${widget.projectId}'),
+                    if (widget.isEditMode) 
+                      Text('Task ID type: ${widget.existingTask?['id']?.runtimeType}'),
                     if (widget.isEditMode)
-                      Text('Task ID: ${widget.existingTask?['id'] ?? widget.existingTask?['guid'] ?? 'Unknown'}'),
+                      Text('Task ID: ${widget.existingTask?['id']?.toString() ?? widget.existingTask?['guid']?.toString() ?? 'Unknown'}'),
                   ],
                 ),
               ),
@@ -287,14 +330,9 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                               ),
-                              items: const [
-                                DropdownMenuItem(value: 'Pending', child: Text('Pending')),
-                                DropdownMenuItem(value: 'In Progress', child: Text('In Progress')),
-                                DropdownMenuItem(value: 'Done', child: Text('Done')),
-                                DropdownMenuItem(value: 'On Hold', child: Text('On Hold')),
-                                DropdownMenuItem(value: 'Cancelled', child: Text('Cancelled')),
-                                DropdownMenuItem(value: 'Review', child: Text('In Review')),
-                              ],
+                              items: DropdownHelpers.taskStatusOptions.map((String status) {
+                                return DropdownMenuItem(value: status, child: Text(status));
+                              }).toList(),
                               onChanged: (value) => setState(() => _selectedStatus = value),
                             ),
                           ],
@@ -386,12 +424,7 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                               ),
-                              items: const [
-                                DropdownMenuItem(value: 'None', child: Text('None')),
-                                DropdownMenuItem(value: 'Low', child: Text('Low')),
-                                DropdownMenuItem(value: 'Medium', child: Text('Medium')),
-                                DropdownMenuItem(value: 'High', child: Text('High')),
-                              ],
+                              items: DropdownHelpers.buildPriorityItems(),
                               onChanged: (value) => setState(() => _selectedPriority = value),
                             ),
                           ],
