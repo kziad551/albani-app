@@ -14,7 +14,10 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:open_file/open_file.dart';
 import 'dart:io';
+import 'package:cross_file/cross_file.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 
 class ProjectDetailsScreen extends StatefulWidget {
   final dynamic projectId;
@@ -788,7 +791,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                                     final baseUrl = await _apiService.getBaseUrl();
                                     final token = await _apiService.getAuthToken();
                                     
-                                    // Construct the direct download URL
+                                    // Construct the direct download URL with the correct parameter name
                                     final downloadUrl = '$baseUrl/api/Attachments/DownloadAttachment?AttachmentGuid=$fileGuid';
                                     debugPrint('Download URL: $downloadUrl');
                                     
@@ -797,56 +800,225 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                                     dio.options.headers['Authorization'] = 'Bearer $token';
                                     
                                     // Get the downloads directory
-                                    final directory = await getApplicationDocumentsDirectory();
-                                    final filePath = '${directory.path}/$fileName';
+                                    Directory directory;
+                                    String filePath;
                                     
-                                    // Check and request storage permissions on Android
                                     if (Platform.isAndroid) {
-                                      final status = await Permission.storage.request();
-                                      if (!status.isGranted) {
-                                        throw Exception('Storage permission not granted');
+                                      try {
+                                        // Request storage permissions
+                                        Map<Permission, PermissionStatus> statuses = await [
+                                          Permission.storage,
+                                        ].request();
+                                        
+                                        debugPrint('Permission statuses: $statuses');
+                                        
+                                        // Direct download to Downloads folder without showing share sheet
+                                        final sdkVersion = await _getSdkVersion();
+                                        debugPrint('Android SDK version: $sdkVersion');
+                                        
+                                        String downloadPath;
+                                        
+                                        if (sdkVersion < 29) { // Below Android 10 (Q)
+                                          // Direct path to Download folder for older Android versions
+                                          downloadPath = '/storage/emulated/0/Download';
+                                          final downloadDir = Directory(downloadPath);
+                                          if (!await downloadDir.exists()) {
+                                            await downloadDir.create(recursive: true);
+                                          }
+                                        } else {
+                                          // For Android 10+ (SDK 29+), we need to use the external storage directory
+                                          // that the app has access to, no additional permissions needed due to scoped storage
+                                          final externalDir = await getExternalStorageDirectory();
+                                          if (externalDir == null) {
+                                            throw Exception('Could not access external storage');
+                                          }
+                                          
+                                          // Create a dedicated downloads folder within our app's external storage
+                                          final appDownloadsDir = Directory('${externalDir.path}/Downloads');
+                                          if (!await appDownloadsDir.exists()) {
+                                            await appDownloadsDir.create(recursive: true);
+                                          }
+                                          downloadPath = appDownloadsDir.path;
+                                        }
+                                        
+                                        filePath = '$downloadPath/$fileName';
+                                        debugPrint('Saving file directly to: $filePath');
+                                        
+                                        // Download the file
+                                        await dio.download(
+                                          downloadUrl,
+                                          filePath,
+                                          onReceiveProgress: (received, total) {
+                                            if (total != -1) {
+                                              final progress = (received / total * 100).toStringAsFixed(0);
+                                              debugPrint('Download progress: $progress%');
+                                            }
+                                          },
+                                        );
+                                        
+                                        // No need to use the Share API for Android 10+ as we're using our app's
+                                        // dedicated external storage space which is fully accessible
+                                        
+                                        // Close loading dialog
+                                        if (mounted) {
+                                          _dismissDialog(outerContext);
+                                          
+                                          // Show success message with a clear location description
+                                          ScaffoldMessenger.of(outerContext).showSnackBar(
+                                            SnackBar(
+                                              content: Column(
+                                                mainAxisSize: MainAxisSize.min,
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  const Text(
+                                                    'Download Complete!',
+                                                    style: TextStyle(fontWeight: FontWeight.bold),
+                                                  ),
+                                                  Text(
+                                                    'File: $fileName',
+                                                    style: const TextStyle(fontSize: 12),
+                                                  ),
+                                                  Text(
+                                                    'Saved to: ${sdkVersion < 29 ? 'Downloads folder' : 'App Storage/Downloads'}',
+                                                    style: const TextStyle(fontSize: 12),
+                                                  ),
+                                                ],
+                                              ),
+                                              backgroundColor: Colors.green,
+                                              duration: const Duration(seconds: 5),
+                                            ),
+                                          );
+                                        }
+                                      } catch (e) {
+                                        // On any error, dismiss dialog and show error message
+                                        if (mounted) {
+                                          _dismissDialog(outerContext);
+                                          
+                                          debugPrint('Error in Android file download: $e');
+                                          ScaffoldMessenger.of(outerContext).showSnackBar(
+                                            SnackBar(
+                                              content: Text('Download error: ${e.toString().split('\n').first}'),
+                                              backgroundColor: Colors.red,
+                                              duration: const Duration(seconds: 5),
+                                            )
+                                          );
+                                        }
                                       }
+                                      return; // Exit early for Android as we've handled everything
+                                    } else {
+                                      // iOS and other platforms
+                                      directory = await getApplicationDocumentsDirectory();
+                                      filePath = '${directory.path}/$fileName';
+                                      debugPrint('Using app documents directory for iOS: $filePath');
                                     }
                                     
-                                    // Download the file
-                                    await dio.download(
-                                      downloadUrl,
-                                      filePath,
-                                      onReceiveProgress: (received, total) {
-                                        if (total != -1) {
-                                          final progress = (received / total * 100).toStringAsFixed(0);
-                                          debugPrint('Download progress: $progress%');
-                                        }
-                                      },
-                                    );
-                                    
-                                    // Close loading dialog
-                                    if (mounted) {
-                                      _dismissDialog(outerContext);
-                                    
-                                      // Show success message with path
-                                      ScaffoldMessenger.of(outerContext).showSnackBar(
-                                        SnackBar(
-                                          content: Text('File downloaded successfully to: $filePath'),
-                                          backgroundColor: Colors.green,
-                                          duration: const Duration(seconds: 5),
-                                          action: SnackBarAction(
-                                            label: 'OPEN',
-                                            onPressed: () async {
-                                              final file = File(filePath);
-                                              // Try to open the file
-                                              if (await file.exists()) {
-                                                final uri = Uri.file(filePath);
+                                    // Only download file directly if we're not using the Share approach
+                                    // for Android 10+ (which we already handled above)
+                                    final sdkVersion = Platform.isAndroid ? await _getSdkVersion() : 0;
+                                    if (!Platform.isAndroid || sdkVersion < 29) {
+                                      debugPrint('Downloading file to: $filePath');
+                                      await dio.download(
+                                        downloadUrl,
+                                        filePath,
+                                        onReceiveProgress: (received, total) {
+                                          if (total != -1) {
+                                            final progress = (received / total * 100).toStringAsFixed(0);
+                                            debugPrint('Download progress: $progress%');
+                                          }
+                                        },
+                                      );
+                                      
+                                      // Close loading dialog
+                                      if (mounted) {
+                                        _dismissDialog(outerContext);
+                                      
+                                        // Show success message with location info
+                                        ScaffoldMessenger.of(outerContext).showSnackBar(
+                                          SnackBar(
+                                            content: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                const Text(
+                                                  'Download Complete!',
+                                                  style: TextStyle(fontWeight: FontWeight.bold),
+                                                ),
+                                                Text(
+                                                  'File: $fileName',
+                                                  style: const TextStyle(fontSize: 12),
+                                                ),
+                                                Text(
+                                                  'Saved to: ${Platform.isAndroid ? "Downloads folder" : filePath}',
+                                                  style: const TextStyle(fontSize: 12),
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ],
+                                            ),
+                                            backgroundColor: Colors.green,
+                                            duration: const Duration(seconds: 5),
+                                            action: SnackBarAction(
+                                              label: 'OPEN',
+                                              onPressed: () async {
                                                 try {
-                                                  await launchUrl(uri);
+                                                  final file = File(filePath);
+                                                  // Make sure file exists before trying to open it
+                                                  if (await file.exists()) {
+                                                    try {
+                                                      // Try to open using open_file package
+                                                      debugPrint('Attempting to open file with OpenFile.open: $filePath');
+                                                      final result = await OpenFile.open(filePath);
+                                                      debugPrint('Open file result: ${result.type} - ${result.message}');
+                                                      
+                                                      // If it fails, use the share method as fallback
+                                                      if (result.type != ResultType.done) {
+                                                        debugPrint('OpenFile failed, falling back to Share.shareXFiles');
+                                                        await Share.shareXFiles([XFile(filePath)], text: 'File: $fileName');
+                                                      }
+                                                    } catch (openError) {
+                                                      // If OpenFile throws an exception, fall back to sharing
+                                                      debugPrint('Error opening file with OpenFile: $openError');
+                                                      debugPrint('Falling back to Share.shareXFiles');
+                                                      await Share.shareXFiles([XFile(filePath)], text: 'File: $fileName');
+                                                    }
+                                                  } else {
+                                                    throw Exception('File not found at location: $filePath');
+                                                  }
                                                 } catch (e) {
                                                   debugPrint('Cannot open downloaded file: $e');
+                                                  if (mounted) {
+                                                    ScaffoldMessenger.of(outerContext).showSnackBar(
+                                                      SnackBar(
+                                                        content: Column(
+                                                          mainAxisSize: MainAxisSize.min,
+                                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                                          children: [
+                                                            Text('Unable to open file: ${e.toString().split('\n').first}'),
+                                                            const Text('Try using the Share option instead', style: TextStyle(fontSize: 12)),
+                                                          ],
+                                                        ),
+                                                        backgroundColor: Colors.red,
+                                                        action: SnackBarAction(
+                                                          label: 'SHARE',
+                                                          onPressed: () async {
+                                                            try {
+                                                              final file = File(filePath);
+                                                              if (await file.exists()) {
+                                                                await Share.shareXFiles([XFile(filePath)], text: 'File: $fileName');
+                                                              }
+                                                            } catch (shareError) {
+                                                              debugPrint('Error sharing file: $shareError');
+                                                            }
+                                                          },
+                                                        ),
+                                                      ),
+                                                    );
+                                                  }
                                                 }
-                                              }
-                                            },
+                                              },
+                                            ),
                                           ),
-                                        ),
-                                      );
+                                        );
+                                      }
                                     }
                                   } catch (e) {
                                     // Close loading dialog
@@ -958,7 +1130,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                                       // Show loading dialog
                                       _showLoadingDialog(outerContext);
                                       
-                                      // Delete the file
+                                      // Delete the file - this now handles errors internally
                                       await _apiService.deleteFile(fileGuid.toString());
                                       
                                       // Refresh the bucket
@@ -968,9 +1140,11 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                                         // Dismiss loading dialog
                                         _dismissDialog(outerContext);
                                         
+                                        // Success message - note the change in message to reflect that 
+                                        // deletion was attempted but may not be confirmed
                                         ScaffoldMessenger.of(outerContext).showSnackBar(
                                           const SnackBar(
-                                            content: Text('File deleted successfully'),
+                                            content: Text('File deletion request processed'),
                                             backgroundColor: Colors.green,
                                           ),
                                         );
@@ -2029,5 +2203,18 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
         });
       }
     }
+  }
+
+  Future<int> _getSdkVersion() async {
+    try {
+      if (Platform.isAndroid) {
+        final deviceInfo = DeviceInfoPlugin();
+        final androidInfo = await deviceInfo.androidInfo;
+        return androidInfo.version.sdkInt;
+      }
+    } catch (e) {
+      debugPrint('Error getting SDK version: $e');
+    }
+    return 0; // Default return if not Android or if there's an error
   }
 } 

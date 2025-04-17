@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Share the app's internal storage -->
+    <files-path name="files" path="." />
+    <cache-path name="cache" path="." />
+    
+    <!-- Share the external storage -->
+    <external-path name="external" path="." />
+    <external-files-path name="external_files" path="." />
+    <external-cache-path name="external_cache" path="." />
+    
+    <!-- For API 21+ -->
+    <root-path name="root" path="." />
+</paths> 

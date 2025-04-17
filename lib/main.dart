@@ -8,8 +8,12 @@ import 'screens/edit_project_screen.dart';
 import 'screens/project_details_screen.dart';
 import 'screens/project_buckets_screen.dart';
 import 'services/auth_service.dart';
+import 'utils/navigation_service.dart';
 
 void main() {
+  // Ensure plugins are initialized before the app starts
+  WidgetsFlutterBinding.ensureInitialized();
+  
   runApp(const MyApp());
 }
 
@@ -209,6 +213,27 @@ class MyApp extends StatelessWidget {
         }
         return null;
       },
+      navigatorObservers: [
+        // Add a navigator observer to set the logout callback when the app starts
+        _NavigationObserver(),
+      ],
     );
+  }
+}
+
+// Navigator observer to set up the NavigationService
+class _NavigationObserver extends NavigatorObserver {
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    super.didPush(route, previousRoute);
+    _setupNavigationService();
+  }
+  
+  void _setupNavigationService() {
+    // Set the logout callback
+    NavigationService().setLogoutCallback(() {
+      // Use the navigator to push to the login screen
+      navigator?.pushNamedAndRemoveUntil('/login', (route) => false);
+    });
   }
 }

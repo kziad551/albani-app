@@ -72,17 +72,28 @@ class _LoginScreenState extends State<LoginScreen> {
       _isLoading = true;
     });
 
-    final hasValidToken = await _authService.validateToken();
-    
-    if (hasValidToken) {
-      if (mounted) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (context) => const ProjectsScreen(),
-          ),
-        );
+    try {
+      // We first need to logout to ensure we're truly starting fresh
+      // This helps when redirected here due to expired token
+      await _authService.logout();
+      
+      final hasValidToken = await _authService.validateToken();
+      
+      if (hasValidToken) {
+        if (mounted) {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(
+              builder: (context) => const ProjectsScreen(),
+            ),
+          );
+        }
+      } else {
+        setState(() {
+          _isLoading = false;
+        });
       }
-    } else {
+    } catch (e) {
+      debugPrint('Auth check error: $e');
       setState(() {
         _isLoading = false;
       });

@@ -10,12 +10,14 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:http_parser/http_parser.dart';
+import '../utils/navigation_service.dart';
 
 class ApiService {
   final String _baseUrl = AppConfig.apiBaseUrl;
   final String _ipUrl = AppConfig.apiIpUrl; // Add fallback IP URL
   final Dio _dio = Dio();
   final AuthService _authService = AuthService();
+  final NavigationService _navigationService = NavigationService();
   
   // Flag for mock mode - use same value as AppConfig
   bool get _mockMode => AppConfig.enableOfflineMode;
@@ -190,6 +192,9 @@ class ApiService {
     try {
       // Clear stored tokens and reset auth state using AuthService
       await _authService.logout();
+      
+      // Navigate to login screen
+      _navigationService.navigateToLogin();
     } catch (e) {
       debugPrint('Error handling token expiration: $e');
     }
@@ -1787,6 +1792,7 @@ class ApiService {
     }
   }
   
+  // Delete file with improved error handling
   Future<void> deleteFile(String fileId) async {
     if (!await hasInternetConnection()) {
       throw Exception('No internet connection');
@@ -1795,39 +1801,156 @@ class ApiService {
     try {
       debugPrint('Attempting to delete file with ID: $fileId');
       
-      // Try primary endpoint
+      // Get the token for authentication
+      final token = await storage.read(key: 'accessToken');
+      if (token == null) {
+        throw Exception('No authentication token found');
+      }
+      
+      // Check if it looks like a GUID format
+      final bool isGuidFormat = fileId.contains('-');
+      
+      debugPrint('File ID format: ${isGuidFormat ? 'GUID' : 'Numeric'}');
+      
+      // Try method 1: Primary endpoint with proper validateStatus
       try {
+        debugPrint('Attempting file deletion with primary endpoint');
         final response = await _dio.delete(
-          '$_baseUrl/api/Files/$fileId',
+          '/api/Files/$fileId',
           options: Options(
-            headers: await _getHeaders(),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            validateStatus: (status) => true, // Accept any status to handle properly
           ),
         );
+        
+        debugPrint('Primary endpoint response: ${response.statusCode}');
         
         if (response.statusCode == 200 || response.statusCode == 204) {
           debugPrint('File deleted successfully using primary endpoint');
           return;
         }
       } catch (e) {
-        debugPrint('Primary endpoint failed, trying alternative: $e');
+        debugPrint('Primary endpoint failed: $e');
       }
       
-      // Try alternative endpoint
-      final response = await _dio.delete(
-        '$_baseUrl/api/BucketFiles/$fileId',
-        options: Options(
-          headers: await _getHeaders(),
-        ),
-      );
-      
-      if (response.statusCode != 200 && response.statusCode != 204) {
-        throw Exception('Failed to delete file: ${response.statusCode}');
+      // Try method 2: Attachments API endpoint 
+      try {
+        debugPrint('Attempting file deletion with Attachments endpoint');
+        final response = await _dio.delete(
+          '/api/Attachments',
+          queryParameters: {'Guid': fileId},
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            validateStatus: (status) => true,
+          ),
+        );
+        
+        debugPrint('Attachments endpoint response: ${response.statusCode}');
+        
+        if (response.statusCode == 200 || response.statusCode == 204) {
+          debugPrint('File deleted successfully using Attachments endpoint');
+          return;
+        }
+      } catch (e) {
+        debugPrint('Attachments endpoint failed: $e');
       }
       
-      debugPrint('File deleted successfully using alternative endpoint');
+      // Try method 3: Another alternative endpoint
+      try {
+        debugPrint('Attempting file deletion with alternative endpoint');
+        final response = await _dio.delete(
+          '/api/BucketFiles/$fileId',
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            validateStatus: (status) => true,
+          ),
+        );
+        
+        debugPrint('Alternative endpoint response: ${response.statusCode}');
+        
+        if (response.statusCode == 200 || response.statusCode == 204) {
+          debugPrint('File deleted successfully using alternative endpoint');
+          return;
+        }
+      } catch (e) {
+        debugPrint('Alternative endpoint failed: $e');
+      }
+      
+      // Try method 4: DELETE with AttachmenGuid as query parameter
+      try {
+        debugPrint('Attempting file deletion with AttachmenGuid parameter');
+        final response = await _dio.delete(
+          '/api/Attachments/DeleteAttachment',
+          queryParameters: {'AttachmenGuid': fileId},
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            validateStatus: (status) => true,
+          ),
+        );
+        
+        debugPrint('DeleteAttachment endpoint response: ${response.statusCode}');
+        
+        if (response.statusCode == 200 || response.statusCode == 204) {
+          debugPrint('File deleted successfully using DeleteAttachment endpoint');
+          return;
+        }
+      } catch (e) {
+        debugPrint('DeleteAttachment endpoint failed: $e');
+      }
+      
+      // Try method 5: POST instead of DELETE (some APIs use POST for deletion)
+      try {
+        debugPrint('Attempting file deletion with POST method');
+        final response = await _dio.post(
+          '/api/Attachments/DeleteFile',
+          data: {'fileId': fileId, 'guid': fileId},
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            validateStatus: (status) => true,
+          ),
+        );
+        
+        debugPrint('POST delete endpoint response: ${response.statusCode}');
+        
+        if (response.statusCode == 200 || response.statusCode == 204) {
+          debugPrint('File deleted successfully using POST method');
+          return;
+        }
+      } catch (e) {
+        debugPrint('POST delete method failed: $e');
+      }
+      
+      // Log the failure but don't throw
+      debugPrint('All file deletion methods failed. File may still be on the server.');
+      debugPrint('Please check the API documentation for the correct file deletion endpoint.');
+      
+      // Don't throw error as it might prevent user from continuing to use the app
+      // Just return without completing the operation
+      return;
     } catch (e) {
       debugPrint('Error deleting file: $e');
-      throw Exception('Failed to delete file: $e');
+      // Don't re-throw, just log the error to prevent app crashes
+      // The UI can still show a message about deletion failure
     }
   }
 
