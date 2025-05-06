@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'screens/login_screen.dart';
 import 'screens/projects_screen.dart';
 import 'screens/users_screen.dart';
@@ -9,39 +10,44 @@ import 'screens/project_details_screen.dart';
 import 'screens/project_buckets_screen.dart';
 import 'services/auth_service.dart';
 import 'utils/navigation_service.dart';
+import 'splash_screen.dart';
 
 void main() {
   // Ensure plugins are initialized before the app starts
   WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+    DeviceOrientation.portraitDown,
+  ]);
   
   runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  const MyApp({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     final AuthService authService = AuthService();
     
     return MaterialApp(
-      title: 'AlBani Project Manager',
+      title: 'AlBani',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF1976D2),
-          primary: const Color(0xFF1976D2),
-          background: Colors.white,
-          surface: Colors.white,
-        ),
+        primarySwatch: Colors.blue,
         scaffoldBackgroundColor: Colors.white,
-        textTheme: const TextTheme(
-          bodyLarge: TextStyle(color: Colors.black87),
-          bodyMedium: TextStyle(color: Colors.black87),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.white,
+          elevation: 0,
+          iconTheme: IconThemeData(color: Colors.black),
+          titleTextStyle: TextStyle(
+            color: Colors.black,
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+          ),
         ),
-        useMaterial3: true,
       ),
-      initialRoute: '/login',
+      home: const SplashScreen(),
       routes: {
         '/login': (context) => const LoginScreen(),
         '/projects': (context) => const ProjectsScreen(),

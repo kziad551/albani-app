@@ -53,6 +53,8 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  flutter_launcher_icons: ^0.13.1
+  flutter_native_splash: ^2.3.10
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
@@ -76,6 +78,7 @@ flutter:
   assets:
     - assets/images/albanilogo.png
     - assets/images/logo.png
+    - assets/images/app_logo.png
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
@@ -102,3 +105,37 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+  # Add iOS as a supported platform
+  # platforms:
+  #   ios:
+  #     pluginClass: none
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/images/app_logo.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/images/app_logo.png"
+  remove_alpha_ios: true
+  min_sdk_android: 21
+  adaptive_icon_mask: false
+  background_color_ios: "#FFFFFF"
+
+# Configure native splash screen to match our custom splash
+flutter_native_splash:
+  color: "#FFFFFF"
+  image: assets/images/albanilogo.png
+  color_dark: "#FFFFFF"
+  image_dark: assets/images/albanilogo.png
+  android_gravity: center
+  ios_content_mode: center
+  web: false
+  android_12:
+    # Disable Android 12 splash to avoid double splash screens
+    icon_background_color: "#FFFFFF"
+  fullscreen: true
+  android: true
+  ios: true
+  # This branding parameter removes the # flutter line that sometimes appears during splash
+  branding_mode: none
