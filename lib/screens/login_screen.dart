@@ -20,6 +20,8 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isLoading = false;
   String? _errorMessage;
   bool _showPassword = false;
+  bool _rememberMe = false;
+  final _storage = const FlutterSecureStorage();
 
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
@@ -34,7 +36,19 @@ class _LoginScreenState extends State<LoginScreen> {
       final success = await _authService.login(
         _usernameController.text,
         _passwordController.text,
+        rememberMe: _rememberMe,
       );
+
+      // Save or clear credentials on mobile
+      if (Theme.of(context).platform == TargetPlatform.android || Theme.of(context).platform == TargetPlatform.iOS) {
+        if (_rememberMe && success) {
+          await _storage.write(key: 'saved_username', value: _usernameController.text);
+          await _storage.write(key: 'saved_password', value: _passwordController.text);
+        } else {
+          await _storage.delete(key: 'saved_username');
+          await _storage.delete(key: 'saved_password');
+        }
+      }
 
       if (success) {
         debugPrint('Login successful');
@@ -65,6 +79,22 @@ class _LoginScreenState extends State<LoginScreen> {
   void initState() {
     super.initState();
     _checkAuth();
+    _loadSavedCredentials();
+  }
+
+  Future<void> _loadSavedCredentials() async {
+    // Only autofill on mobile
+    if (Theme.of(context).platform == TargetPlatform.android || Theme.of(context).platform == TargetPlatform.iOS) {
+      final savedUsername = await _storage.read(key: 'saved_username');
+      final savedPassword = await _storage.read(key: 'saved_password');
+      if (savedUsername != null && savedPassword != null) {
+        setState(() {
+          _usernameController.text = savedUsername;
+          _passwordController.text = savedPassword;
+          _rememberMe = true;
+        });
+      }
+    }
   }
 
   Future<void> _checkAuth() async {
@@ -242,6 +272,19 @@ class _LoginScreenState extends State<LoginScreen> {
                               },
                             ),
                             const SizedBox(height: 24),
+                            Row(
+                              children: [
+                                Checkbox(
+                                  value: _rememberMe,
+                                  onChanged: (val) {
+                                    setState(() {
+                                      _rememberMe = val ?? false;
+                                    });
+                                  },
+                                ),
+                                const Text('Remember Me'),
+                              ],
+                            ),
                             SizedBox(
                               width: double.infinity,
                               height: 48,

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -1079,9 +1080,23 @@ class ApiService {
       
       debugPrint('Getting employees for project: $projectGuid');
       
+      // Get token for authentication
+      final token = await storage.read(key: 'accessToken');
+      if (token == null) {
+        throw Exception('No authentication token found');
+      }
+      
       // First try to get employees specifically assigned to this project
-      final response = await _dio.get('/api/Projects/GetProjectEmployees', 
-        queryParameters: {'projectGuid': projectGuid.toString()}
+      final response = await _dio.get(
+        '/api/Projects/GetProjectEmployees', 
+        queryParameters: {'projectGuid': projectGuid.toString()},
+        options: Options(
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Accept': 'application/json',
+            'Host': AppConfig.apiHost,
+          },
+        ),
       );
       
       debugPrint('Project employees response status: ${response.statusCode}');
@@ -1990,6 +2005,489 @@ class ApiService {
     } catch (e) {
       debugPrint('Error getting file share URL: $e');
       throw Exception('Failed to get share URL: $e');
+    }
+  }
+
+  // Get attachments for a specific task
+  Future<List<Map<String, dynamic>>> getTaskAttachments(String taskGuid) async {
+    try {
+      if (!await hasInternetConnection()) {
+        throw Exception('No internet connection');
+      }
+      
+      // Don't try to fetch data for invalid task GUIDs
+      if (taskGuid.isEmpty || !taskGuid.contains('-')) {
+        debugPrint('Invalid task GUID provided: $taskGuid');
+        return [];
+      }
+      
+      debugPrint('Getting attachments for task: $taskGuid');
+      
+      // Get token for authentication
+      final token = await storage.read(key: 'accessToken');
+      if (token == null) {
+        throw Exception('No authentication token found');
+      }
+
+      try {
+        final response = await _dio.get(
+          '/api/Attachments/GetTaskAttachments',
+          queryParameters: {'TaskGuid': taskGuid},
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/json',
+              'Host': AppConfig.apiHost,
+            },
+          ),
+        );
+        
+        debugPrint('Task attachments response status: ${response.statusCode}');
+        debugPrint('Task attachments response data: ${response.data}');
+
+        if (response.statusCode == 200) {
+          if (response.data is List) {
+            return List<Map<String, dynamic>>.from(response.data);
+          } else if (response.data is Map) {
+            final data = response.data as Map<String, dynamic>;
+            if (data['data'] != null && data['data'] is List) {
+              return List<Map<String, dynamic>>.from(data['data']);
+            } else if (data['result'] != null && data['result'] is List) {
+              return List<Map<String, dynamic>>.from(data['result']);
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('Error fetching task attachments: $e');
+      }
+      
+      return [];
+    } catch (e) {
+      debugPrint('Error getting task attachments: $e');
+      return [];
+    }
+  }
+
+  // Upload file to task using bytes (for web)
+  Future<Map<String, dynamic>> uploadFileToTaskFromBytes(
+    String taskGuid,
+    Uint8List fileBytes,
+    String fileName, {
+    Map<String, dynamic>? extra,
+  }) async {
+    try {
+      if (!await hasInternetConnection()) {
+        throw Exception('No internet connection');
+      }
+      final filePart = MultipartFile.fromBytes(
+        fileBytes,
+        filename: fileName,
+        contentType: MediaType.parse('application/octet-stream'),
+      );
+      final form = {
+        'BucketTaskGuid': taskGuid,
+        'File': filePart,
+        if (extra != null) ...extra,
+      };
+      final headers = await _getHeaders();
+      headers.remove('Content-Type'); // Let Dio set boundary
+      final baseUrl = await getBaseUrl();
+      debugPrint('=== [DEBUG] Uploading file to task (from bytes) ===');
+      debugPrint('Endpoint: $baseUrl/api/BucketTasks/AddFileToTask');
+      debugPrint('Form: $form');
+      debugPrint('Headers: $headers');
+      final res = await _dio.post(
+        '$baseUrl/api/BucketTasks/AddFileToTask',
+        data: FormData.fromMap(form),
+        options: Options(headers: headers),
+      );
+      if (res.statusCode! >= 200 && res.statusCode! < 300) {
+        debugPrint('File uploaded successfully: ${res.data}');
+        return res.data;
+      }
+      throw Exception('Upload failed: ${res.statusCode}');
+    } catch (e) {
+      debugPrint('Error uploading file to task (from bytes): $e');
+      throw Exception('Failed to upload file to task (from bytes): $e');
+    }
+  }
+
+  // Upload file directly to a task
+  Future<Map<String, dynamic>> uploadFileToTask(
+    String taskGuid,
+    String filePath, {
+    Map<String, dynamic>? extra,
+  }) async {
+    try {
+      if (!await hasInternetConnection()) {
+        throw Exception('No internet connection');
+      }
+      final fileName = filePath.split('/').last;
+      final filePart = await MultipartFile.fromFile(
+        filePath,
+        filename: fileName,
+        contentType: MediaType.parse('application/octet-stream'),
+      );
+      final form = {
+        'BucketTaskGuid': taskGuid,
+        'File': filePart,
+        if (extra != null) ...extra,
+      };
+      final headers = await _getHeaders();
+      headers.remove('Content-Type'); // Let Dio set boundary
+      final baseUrl = await getBaseUrl();
+      debugPrint('=== [DEBUG] Uploading file to task ===');
+      debugPrint('Endpoint: $baseUrl/api/BucketTasks/AddFileToTask');
+      debugPrint('Form: $form');
+      debugPrint('Headers: $headers');
+      final res = await _dio.post(
+        '$baseUrl/api/BucketTasks/AddFileToTask',
+        data: FormData.fromMap(form),
+        options: Options(headers: headers),
+      );
+      if (res.statusCode! >= 200 && res.statusCode! < 300) {
+        debugPrint('File uploaded successfully: ${res.data}');
+        return res.data;
+      }
+      throw Exception('Upload failed: ${res.statusCode}');
+    } catch (e) {
+      debugPrint('Error uploading file to task: $e');
+      throw Exception('Failed to upload file to task: $e');
+    }
+  }
+
+  // Get comments for a specific task
+  Future<List<Map<String, dynamic>>> getTaskComments(String taskGuid) async {
+    try {
+      if (!await hasInternetConnection()) {
+        throw Exception('No internet connection');
+      }
+      
+      if (taskGuid.isEmpty || !taskGuid.contains('-')) {
+        debugPrint('Invalid task GUID provided: $taskGuid');
+        return [];
+      }
+      
+      debugPrint('Getting comments for task: $taskGuid');
+      
+      final response = await get('api/BucketTasks/TaskComments?TaskGuid=$taskGuid');
+      
+      if (response is List) {
+        return List<Map<String, dynamic>>.from(response.map((item) => Map<String, dynamic>.from(item)));
+      }
+      
+      return [];
+    } catch (e) {
+      debugPrint('Error getting task comments: $e');
+      return [];
+    }
+  }
+
+  // Add comment to task (text only)
+  Future<Map<String, dynamic>> createTaskComment(String taskGuid, String text) async {
+    try {
+      if (!await hasInternetConnection()) {
+        throw Exception('No internet connection');
+      }
+      debugPrint('=== [DEBUG] Posting text comment ===');
+      debugPrint('Endpoint: api/BucketTasks/AddCommentToTask');
+      debugPrint('Payload: {taskGuid: $taskGuid, comment: $text}');
+      final data = {
+        'taskGuid': taskGuid,
+        'comment': text,
+      };
+      final headers = await _getHeaders();
+      debugPrint('Headers: ' + headers.toString());
+      final response = await post('api/BucketTasks/AddCommentToTask', data);
+      if (response is Map) {
+        debugPrint('Comment added successfully: $response');
+        return Map<String, dynamic>.from(response);
+      }
+      throw Exception('Invalid response format');
+    } catch (e) {
+      debugPrint('Error adding comment: $e');
+      throw Exception('Failed to add comment: $e');
+    }
+  }
+
+  // Add comment with file attachment
+  Future<Map<String, dynamic>> addCommentWithFile(String taskGuid, String commentText, String filePath) async {
+    try {
+      if (!await hasInternetConnection()) {
+        throw Exception('No internet connection');
+      }
+      debugPrint('=== [DEBUG] Posting comment with file ===');
+      debugPrint('Endpoint: /api/BucketTasks/AddCommentToTask');
+      debugPrint('File path: $filePath');
+      debugPrint('Payload: {taskGuid: $taskGuid, comment: $commentText, file: $filePath}');
+      final fileName = filePath.split('/').last;
+      final formData = FormData.fromMap({
+        'taskGuid':  taskGuid,
+        'comment':   commentText,
+        'file': await MultipartFile.fromFile(
+          filePath,
+          filename: fileName,
+          contentType: MediaType.parse('application/octet-stream'),
+        ),
+      });
+      final headers = await _getHeaders();
+      final baseUrl = await getBaseUrl();
+      headers.remove('Content-Type'); // let Dio set it
+      debugPrint('Headers: ' + headers.toString());
+      final response = await _dio.post(
+        '$baseUrl/api/BucketTasks/AddCommentToTask',
+        data: formData,
+        options: Options(
+          headers: headers,
+          followRedirects: true,
+          validateStatus: (status) => status! < 500,
+        ),
+      );
+      debugPrint('Response status: ${response.statusCode}');
+      debugPrint('Response data: ${response.data}');
+      if (response.statusCode! >= 200 && response.statusCode! < 300) {
+        if (response.data is Map) {
+          final comment = Map<String, dynamic>.from(response.data);
+          debugPrint('Comment with file added successfully');
+          return comment;
+        } else if (response.data is String && response.data.toString().isNotEmpty) {
+          try {
+            final comment = jsonDecode(response.data);
+            return Map<String, dynamic>.from(comment);
+          } catch (e) {
+            debugPrint('Could not parse response as JSON: $e');
+          }
+        }
+      }
+      throw Exception('Failed to add comment with file: Status ${response.statusCode}');
+    } catch (e, stack) {
+      debugPrint('Error adding comment with file: $e');
+      debugPrint('Stacktrace: $stack');
+      throw Exception('Failed to add comment with file: $e');
+    }
+  }
+
+  // Add comment with file using bytes (for web)
+  Future<Map<String, dynamic>> addCommentWithFileBytes(String taskGuid, String commentText, Uint8List fileBytes, String fileName) async {
+    try {
+      if (!await hasInternetConnection()) {
+        throw Exception('No internet connection');
+      }
+      debugPrint('=== [DEBUG] Posting comment with file (bytes) ===');
+      debugPrint('Endpoint: /api/BucketTasks/AddCommentToTask');
+      debugPrint('Payload: {taskGuid: $taskGuid, comment: $commentText, file: $fileName}');
+      final formData = FormData.fromMap({
+        'taskGuid': taskGuid,
+        'comment': commentText,
+        'file': MultipartFile.fromBytes(
+          fileBytes,
+          filename: fileName,
+          contentType: MediaType.parse('application/octet-stream'),
+        ),
+      });
+      final headers = await _getHeaders();
+      final baseUrl = await getBaseUrl();
+      headers.remove('Content-Type'); // let Dio set it
+      debugPrint('Headers: ' + headers.toString());
+      final response = await _dio.post(
+        '$baseUrl/api/BucketTasks/AddCommentToTask',
+        data: formData,
+        options: Options(
+          headers: headers,
+          followRedirects: true,
+          validateStatus: (status) => status! < 500,
+        ),
+      );
+      debugPrint('Response status: ${response.statusCode}');
+      debugPrint('Response data: ${response.data}');
+      if (response.statusCode! >= 200 && response.statusCode! < 300) {
+        if (response.data is Map) {
+          final comment = Map<String, dynamic>.from(response.data);
+          debugPrint('Comment with file bytes added successfully');
+          return comment;
+        } else if (response.data is String && response.data.toString().isNotEmpty) {
+          try {
+            final comment = jsonDecode(response.data);
+            return Map<String, dynamic>.from(comment);
+          } catch (e) {
+            debugPrint('Could not parse response as JSON: $e');
+          }
+        }
+      }
+      throw Exception('Failed to add comment with file: Status ${response.statusCode}');
+    } catch (e, stack) {
+      debugPrint('Error adding comment with file bytes: $e');
+      debugPrint('Stacktrace: $stack');
+      throw Exception('Failed to add comment with file: $e');
+    }
+  }
+
+  // Get attachments for a specific comment
+  Future<List<Map<String, dynamic>>> getCommentAttachments(String commentGuid) async {
+    try {
+      if (!await hasInternetConnection()) {
+        throw Exception('No internet connection');
+      }
+      
+      if (commentGuid.isEmpty || !commentGuid.contains('-')) {
+        debugPrint('Invalid comment GUID provided: $commentGuid');
+        return [];
+      }
+      
+      debugPrint('Getting attachments for comment: $commentGuid');
+      
+      final token = await storage.read(key: 'accessToken');
+      if (token == null) {
+        throw Exception('No authentication token found');
+      }
+
+      try {
+        final response = await _dio.get(
+          '/api/GetCommentAttachments',
+          queryParameters: {'CommentGuid': commentGuid},
+          options: Options(
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/json',
+              'Host': AppConfig.apiHost,
+            },
+          ),
+        );
+        
+        debugPrint('Comment attachments response status: ${response.statusCode}');
+        debugPrint('Comment attachments response data: ${response.data}');
+
+        if (response.statusCode == 200) {
+          if (response.data is List) {
+            return List<Map<String, dynamic>>.from(response.data);
+          } else if (response.data is Map) {
+            final data = response.data as Map<String, dynamic>;
+            if (data['data'] != null && data['data'] is List) {
+              return List<Map<String, dynamic>>.from(data['data']);
+            } else if (data['result'] != null && data['result'] is List) {
+              return List<Map<String, dynamic>>.from(data['result']);
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('Error fetching comment attachments: $e');
+      }
+      
+      return [];
+    } catch (e) {
+      debugPrint('Error getting comment attachments: $e');
+      return [];
+    }
+  }
+
+  // Add file to comment with task context
+  Future<Map<String, dynamic>> addFileToComment(String taskGuid, String commentGuid, String filePath) async {
+    try {
+      if (!await hasInternetConnection()) {
+        throw Exception('No internet connection');
+      }
+      
+      debugPrint('Adding file to comment: $commentGuid for task: $taskGuid');
+      debugPrint('File path: $filePath');
+      
+      final fileName = filePath.split('/').last;
+      
+      final multipartFile = await MultipartFile.fromFile(
+        filePath,
+        filename: fileName,
+        contentType: MediaType.parse('application/octet-stream'),
+      );
+      
+      // Based on network logs, use task GUID and comment GUID together
+      final formData = FormData.fromMap({
+        'taskGuid': taskGuid,
+        'commentGuid': commentGuid,
+        'attachmentGuid': commentGuid, // Some endpoints expect this
+        'file': multipartFile,
+        'File': multipartFile, // Alternative name
+      });
+      
+      final headers = await _getHeaders();
+      headers['Content-Type'] = 'multipart/form-data';
+      
+      final response = await _dio.post(
+        '/api/AddFileToComment',
+        data: formData,
+        options: Options(
+          headers: headers,
+          followRedirects: true,
+          validateStatus: (status) => status! < 500,
+        ),
+      );
+      
+      debugPrint('Add file to comment response: ${response.statusCode}');
+      debugPrint('Response data: ${response.data}');
+      
+      if (response.statusCode! >= 200 && response.statusCode! < 300) {
+        if (response.data != null) {
+          return Map<String, dynamic>.from(response.data);
+        }
+        return {'success': true};
+      } else {
+        throw Exception('Failed to add file to comment: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('Error adding file to comment: $e');
+      throw Exception('Failed to add file to comment: $e');
+    }
+  }
+
+  // Add file to comment using bytes (for web)
+  Future<Map<String, dynamic>> addFileToCommentFromBytes(String taskGuid, String commentGuid, Uint8List fileBytes, String fileName) async {
+    try {
+      if (!await hasInternetConnection()) {
+        throw Exception('No internet connection');
+      }
+      
+      debugPrint('Adding file bytes to comment: $commentGuid for task: $taskGuid');
+      debugPrint('File name: $fileName');
+      
+      final multipartFile = MultipartFile.fromBytes(
+        fileBytes,
+        filename: fileName,
+        contentType: MediaType.parse('application/octet-stream'),
+      );
+      
+      final formData = FormData.fromMap({
+        'taskGuid': taskGuid,
+        'commentGuid': commentGuid,
+        'attachmentGuid': commentGuid,
+        'file': multipartFile,
+        'File': multipartFile,
+      });
+      
+      final headers = await _getHeaders();
+      headers['Content-Type'] = 'multipart/form-data';
+      
+      final response = await _dio.post(
+        '/api/AddFileToComment',
+        data: formData,
+        options: Options(
+          headers: headers,
+          followRedirects: true,
+          validateStatus: (status) => status! < 500,
+        ),
+      );
+      
+      debugPrint('Add file bytes to comment response: ${response.statusCode}');
+      debugPrint('Response data: ${response.data}');
+      
+      if (response.statusCode! >= 200 && response.statusCode! < 300) {
+        if (response.data != null) {
+          return Map<String, dynamic>.from(response.data);
+        }
+        return {'success': true};
+      } else {
+        throw Exception('Failed to add file to comment: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('Error adding file bytes to comment: $e');
+      throw Exception('Failed to add file to comment: $e');
     }
   }
 }

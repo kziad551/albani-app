@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'dart:math';
 import '../config/app_config.dart';
 import 'create_task_screen.dart';
 import '../services/api_service.dart';
+import '../utils/html_parser.dart';
 import '../widgets/app_header.dart';
+import '../widgets/comment_section.dart';
 import 'edit_project_screen.dart';
 import '../widgets/app_drawer.dart';
 import 'project_buckets_screen.dart';
@@ -1272,7 +1275,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                       
                       // Get task information with fallbacks
                       final String taskTitle = _getSafeString(task['title']) ?? _getSafeString(task['name']) ?? 'Unnamed Task';
-                      final String taskDesc = _getSafeString(task['description']) ?? _getSafeString(task['desc']) ?? '';
+                      final String taskDesc = HtmlParser.stripHtml(_getSafeString(task['description']) ?? _getSafeString(task['desc']) ?? '');
                       final String taskStatus = _getSafeString(task['status']) ?? 'pending';
                       final String taskAssignee = _getSafeString(task['assignedToName']) ?? 
                                                 _getSafeString(task['displayAssignee']) ?? 
@@ -1658,37 +1661,142 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                                             ),
                                           ),
                                           Text(taskDesc.isNotEmpty ? taskDesc : 'No description provided'),
-                                          const SizedBox(height: 24),
+                                          const SizedBox(height: 16),
                                           
-                                          // Comments section
+                                          // Task Attachments Section
                                           const Text(
-                                            'Comments',
+                                            'Attachments',
                                             style: TextStyle(
                                               fontWeight: FontWeight.bold,
                                               fontSize: 16,
                                             ),
                                           ),
                                           const SizedBox(height: 8),
-                                          const Text('No comments yet. Be the first one to comment!'),
-                                          const SizedBox(height: 16),
+                                          FutureBuilder<List<Map<String, dynamic>>>(
+                                            future: _apiService.getTaskAttachments(task['guid']?.toString() ?? ''),
+                                            builder: (context, snapshot) {
+                                              if (snapshot.connectionState == ConnectionState.waiting) {
+                                                return const Center(
+                                                  child: Padding(
+                                                    padding: EdgeInsets.all(16.0),
+                                                    child: CircularProgressIndicator(),
+                                                  ),
+                                                );
+                                              }
+                                              
+                                              final attachments = snapshot.data ?? [];
+                                              
+                                              if (attachments.isEmpty) {
+                                                return const Padding(
+                                                  padding: EdgeInsets.symmetric(vertical: 8.0),
+                                                  child: Text(
+                                                    'No attachments found for this task',
+                                                    style: TextStyle(color: Colors.grey),
+                                                  ),
+                                                );
+                                              }
+                                              
+                                              return Column(
+                                                children: [
+                                                  ...attachments.map((attachment) {
+                                                    final fileName = attachment['fileName'] ?? 
+                                                                   attachment['name'] ?? 
+                                                                   'Unnamed File';
+                                                    final fileSize = attachment['fileSize'] ?? 0;
+                                                    final fileExtension = attachment['fileExtension'] ?? '';
+                                                    
+                                                    return Card(
+                                                      margin: const EdgeInsets.symmetric(vertical: 2),
+                                                      child: ListTile(
+                                                        leading: _getFileIcon(fileExtension),
+                                                        title: Text(fileName, style: const TextStyle(fontSize: 14)),
+                                                        subtitle: Text(
+                                                          'Size: ${_formatFileSize(fileSize)}',
+                                                          style: const TextStyle(fontSize: 12),
+                                                        ),
+                                                        trailing: IconButton(
+                                                          icon: const Icon(Icons.download, size: 20),
+                                                          onPressed: () async {
+                                                            final fileGuid = attachment['guid'];
+                                                            if (fileGuid != null) {
+                                                              try {
+                                                                await _downloadFile(attachment, bucketGuid);
+                                                              } catch (e) {
+                                                                if (mounted) {
+                                                                  ScaffoldMessenger.of(context).showSnackBar(
+                                                                    SnackBar(
+                                                                      content: Text('Error downloading file: $e'),
+                                                                      backgroundColor: Colors.red,
+                                                                    ),
+                                                                  );
+                                                                }
+                                                              }
+                                                            }
+                                                          },
+                                                        ),
+                                                      ),
+                                                    );
+                                                  }).toList(),
+                                                  
+                                                  // Add attachment button
+                                                  const SizedBox(height: 8),
+                                                  ElevatedButton.icon(
+                                                    icon: const Icon(Icons.attach_file, size: 16),
+                                                    label: const Text('Add Attachment'),
+                                                    style: ElevatedButton.styleFrom(
+                                                      backgroundColor: const Color(0xFF1976D2),
+                                                      foregroundColor: Colors.white,
+                                                      textStyle: const TextStyle(fontSize: 12),
+                                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                                    ),
+                                                    onPressed: () async {
+                                                      final result = await FilePicker.platform.pickFiles();
+                                                      
+                                                      if (result != null && result.files.isNotEmpty) {
+                                                        final file = result.files.first;
+                                                        if (file.path != null) {
+                                                          try {
+                                                            await _apiService.uploadFileToTask(
+                                                              task['guid']?.toString() ?? '',
+                                                              file.path!,
+                                                            );
+                                                            
+                                                            // Refresh the attachments by rebuilding the FutureBuilder
+                                                            if (mounted) {
+                                                              // Force rebuild by calling setState
+                                                              Navigator.pop(context);
+                                                              // Re-show the modal to refresh attachments
+                                                              // You could also implement a more elegant refresh mechanism
+                                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                                const SnackBar(
+                                                                  content: Text('File attached successfully'),
+                                                                ),
+                                                              );
+                                                            }
+                                                          } catch (e) {
+                                                            if (mounted) {
+                                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                                SnackBar(
+                                                                  content: Text('Error uploading file: $e'),
+                                                                  backgroundColor: Colors.red,
+                                                                ),
+                                                              );
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    },
+                                                  ),
+                                                ],
+                                              );
+                                            },
+                                          ),
+                                          const SizedBox(height: 24),
                                           
-                                          // Comment input
-                                          TextField(
-                                            decoration: InputDecoration(
-                                              hintText: 'Type a comment...',
-                                              border: OutlineInputBorder(
-                                                borderRadius: BorderRadius.circular(8),
-                                              ),
-                                              suffixIcon: TextButton(
-                                                onPressed: () {
-                                                  // Add comment functionality
-                                                  ScaffoldMessenger.of(context).showSnackBar(
-                                                    const SnackBar(content: Text('Adding comments coming soon')),
-                                                  );
-                                                },
-                                                child: const Text('POST'),
-                                              ),
-                                            ),
+                                          // Comments section
+                                          CommentSection(
+                                            taskGuid: task['guid']?.toString() ?? '',
+                                            apiService: _apiService,
                                           ),
                                         ],
                                       ),
@@ -1995,6 +2103,106 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
     }
   }
 
+  // Helper method to format file size
+  String _formatFileSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+
+
+  // Download file method - reuse existing logic from the class
+  Future<void> _downloadFile(Map<String, dynamic> file, String bucketGuid) async {
+    try {
+      final fileName = file['fileName'] ?? file['name'] ?? 'download';
+      final fileGuid = file['guid']?.toString();
+      
+      if (fileGuid == null) {
+        throw Exception('File GUID not found');
+      }
+
+      debugPrint('Downloading file: $fileName with GUID: $fileGuid');
+
+      // Show loading dialog
+      if (mounted) {
+        _showLoadingDialog(context);
+      }
+
+      try {
+        // Get download URL from API
+        final downloadUrl = await _apiService.getFileDownloadUrl(fileGuid);
+        debugPrint('Got download URL: $downloadUrl');
+
+        if (!mounted) return;
+
+        // Check platform and handle accordingly
+        if (kIsWeb) {
+          // For web, open in new tab
+          final uri = Uri.parse(downloadUrl);
+          if (await canLaunchUrl(uri)) {
+            await launchUrl(uri, mode: LaunchMode.externalApplication);
+            debugPrint('File opened in browser');
+          } else {
+            throw Exception('Could not open download URL');
+          }
+        } else {
+          // For mobile, download the file
+          await _downloadAndOpenFile(downloadUrl, fileName);
+        }
+      } finally {
+        // Dismiss loading dialog
+        if (mounted) {
+          _dismissDialog(context);
+        }
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Downloaded: $fileName')),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error downloading file: $e');
+      
+      if (mounted) {
+        _dismissDialog(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error downloading file: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  // Download and open file for mobile platforms
+  Future<void> _downloadAndOpenFile(String url, String fileName) async {
+    try {
+      // Request storage permission
+      if (await Permission.storage.request().isGranted) {
+        final directory = await getExternalStorageDirectory();
+        if (directory != null) {
+          final filePath = '${directory.path}/$fileName';
+          
+          // Create a temporary Dio instance for downloading
+          final dio = Dio();
+          await dio.download(url, filePath);
+          
+          // Open the file
+          final result = await OpenFile.open(filePath);
+          debugPrint('File open result: ${result.message}');
+        }
+      } else {
+        throw Exception('Storage permission denied');
+      }
+    } catch (e) {
+      debugPrint('Error in mobile download: $e');
+      rethrow;
+    }
+  }
+
   List<Map<String, dynamic>> _sortAndFilterTasks(List<Map<String, dynamic>> tasks, String bucketGuid) {
     // Debugging for task count
     debugPrint('FILTER: Processing ${tasks.length} tasks for bucket $bucketGuid');
@@ -2018,7 +2226,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
     // Apply standard filters
     var result = tasksWithoutDeleted.where((task) {
       final String taskTitle = _getSafeString(task['title']) ?? _getSafeString(task['name']) ?? 'Unnamed Task';
-      final String taskDesc = _getSafeString(task['description']) ?? _getSafeString(task['desc']) ?? '';
+      final String taskDesc = HtmlParser.stripHtml(_getSafeString(task['description']) ?? _getSafeString(task['desc']) ?? '');
       final String taskStatus = _getSafeString(task['status']) ?? 'pending';
       final String taskAssignee = _getSafeString(task['assignedToName']) ?? 
                                 _getSafeString(task['displayAssignee']) ?? 

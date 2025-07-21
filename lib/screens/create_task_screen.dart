@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'dart:math';
 import '../services/api_service.dart';
 import '../utils/dropdown_helpers.dart';
+import 'package:multi_select_flutter/multi_select_flutter.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class CreateTaskScreen extends StatefulWidget {
   final String? bucketId;
@@ -33,7 +37,7 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
   final ApiService _apiService = ApiService();
   
   String? _selectedStatus = 'Pending';
-  String? _selectedAssignee;
+  List<String> _selectedAssignees = [];
   String? _selectedPriority = 'Medium';
   DateTime _expiryDate = DateTime.now().add(const Duration(days: 7));
   
@@ -41,6 +45,11 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
   bool _isSaving = false;
   List<Map<String, dynamic>> _projectEmployees = [];
   String _errorMessage = '';
+  
+  // File attachment variables
+  List<PlatformFile> _selectedFiles = [];
+  bool _isUploadingFiles = false;
+  List<Map<String, dynamic>> _existingAttachments = [];
 
   @override
   void initState() {
@@ -51,7 +60,13 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
       _titleController.text = widget.existingTask!['title'] ?? '';
       _descriptionController.text = widget.existingTask!['description'] ?? '';
       _selectedStatus = DropdownHelpers.normalizeTaskStatus(widget.existingTask!['status']);
-      _selectedAssignee = widget.existingTask!['assignedTo']?.toString();
+      // Support both string and list for backward compatibility
+      final assigned = widget.existingTask!['assignedTo'];
+      if (assigned is List) {
+        _selectedAssignees = assigned.map((e) => e.toString()).toList();
+      } else if (assigned != null) {
+        _selectedAssignees = [assigned.toString()];
+      }
       _selectedPriority = DropdownHelpers.normalizePriority(widget.existingTask!['priority']);
       
       if (widget.existingTask!['dueDate'] != null) {
@@ -61,15 +76,37 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
           debugPrint('Error parsing expiry date: $e');
         }
       }
+      
+      // Load existing task attachments if in edit mode
+      _loadExistingAttachments();
     } else {
       // Initialize dropdowns with default values for new tasks
       _selectedStatus = 'Pending'; 
       _selectedPriority = 'Medium';
-      _selectedAssignee = null; // This will be populated after employees are loaded
+      _selectedAssignees = [];
     }
     
     // Load employees for the bucket
     _loadProjectEmployees();
+  }
+
+  // Load existing task attachments when editing
+  Future<void> _loadExistingAttachments() async {
+    if (widget.existingTask == null) return;
+    
+    final taskGuid = widget.existingTask!['guid']?.toString();
+    if (taskGuid == null || taskGuid.isEmpty) return;
+    
+    try {
+      final attachments = await _apiService.getTaskAttachments(taskGuid);
+      debugPrint('Loaded ${attachments.length} existing attachments for task');
+      
+      setState(() {
+        _existingAttachments = attachments;
+      });
+    } catch (e) {
+      debugPrint('Error loading existing attachments: $e');
+    }
   }
 
   Future<void> _loadProjectEmployees() async {
@@ -88,12 +125,14 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
         setState(() {
           _projectEmployees = employees;
           _isLoading = false;
-          
-          // Set default assignee if available
-          if (employees.isNotEmpty && _selectedAssignee == null) {
-            _selectedAssignee = employees[0]['id']?.toString() ?? 
+          // Set default assignees if available and none selected
+          if (employees.isNotEmpty && _selectedAssignees.isEmpty) {
+            final employeeId = employees[0]['id']?.toString() ?? 
                                 employees[0]['guid']?.toString() ?? 
                                 employees[0]['email']?.toString();
+            if (employeeId != null) {
+              _selectedAssignees = [employeeId];
+            }
           }
         });
       }
@@ -129,6 +168,100 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
     }
   }
 
+  // Method to handle file selection
+  Future<void> _pickFiles() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        allowMultiple: true,
+        type: FileType.any,
+      );
+      
+      if (result != null) {
+        setState(() {
+          _selectedFiles.addAll(result.files);
+        });
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error picking files: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  // Method to remove selected file
+  void _removeFile(int index) {
+    setState(() {
+      _selectedFiles.removeAt(index);
+    });
+  }
+
+  // Helper method to download existing attachment
+  Future<void> _downloadExistingAttachment(Map<String, dynamic> attachment) async {
+    try {
+      final fileName = attachment['fileName'] ?? 'attachment';
+      final fileUrl = attachment['fileUrl'] ?? attachment['url'];
+      final fileGuid = attachment['guid']?.toString();
+      
+      if (fileGuid == null || fileGuid.isEmpty) {
+        throw Exception('Invalid file GUID');
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Downloading $fileName...')),
+      );
+      
+              // Get download URL and open file
+        final downloadUrl = await _apiService.getFileDownloadUrl(fileGuid);
+        debugPrint('Got download URL: $downloadUrl');
+
+        if (!mounted) return;
+
+        // Check platform and handle accordingly
+        if (kIsWeb) {
+          // For web, open in new tab
+          final uri = Uri.parse(downloadUrl);
+          if (await canLaunchUrl(uri)) {
+            await launchUrl(uri, mode: LaunchMode.externalApplication);
+            debugPrint('File opened in browser');
+          } else {
+            throw Exception('Could not launch URL');
+          }
+        } else {
+          // For mobile, open file
+          final uri = Uri.parse(downloadUrl);
+          if (await canLaunchUrl(uri)) {
+            await launchUrl(uri);
+            debugPrint('File opened on mobile');
+          } else {
+            throw Exception('Could not launch URL');
+          }
+        }
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('$fileName downloaded successfully')),
+          );
+        }
+    } catch (e) {
+      debugPrint('Error downloading attachment: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to download file')),
+        );
+      }
+    }
+  }
+
+  // Helper method to format file size
+  String _formatFileSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
   Future<void> _saveTask() async {
     if (_titleController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -161,13 +294,13 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
         'title': _titleController.text.trim(),
         'description': _descriptionController.text.trim(),
         'status': _selectedStatus,
-        'assignedTo': _selectedAssignee?.toString(), // Ensure it's a string
+        'assignedTo': _selectedAssignees,
         'priority': _selectedPriority,
         'dueDate': _expiryDate.toIso8601String(),
-        'bucketId': widget.bucketId?.toString(), // Ensure it's a string
-        'bucketGuid': widget.bucketId?.toString(), // Add both forms of bucket ID
+        'bucketId': widget.bucketId?.toString(),
+        'bucketGuid': widget.bucketId?.toString(),
         'bucketName': widget.bucketName,
-        'projectId': widget.projectId.toString(), // Ensure it's a string
+        'projectId': widget.projectId.toString(),
         'projectName': widget.projectName,
       };
       
@@ -203,6 +336,41 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
       
       debugPrint('Task ${isEditMode ? "update" : "creation"} result: $resultTask');
       
+      // Upload files if any were selected
+      if (_selectedFiles.isNotEmpty) {
+        setState(() {
+          _isUploadingFiles = true;
+        });
+
+        final taskGuid = resultTask['guid']?.toString();
+        if (taskGuid != null && taskGuid.isNotEmpty) {
+          for (final file in _selectedFiles) {
+            try {
+              if (kIsWeb) {
+                // For web, use bytes instead of path
+                if (file.bytes != null) {
+                  await _apiService.uploadFileToTaskFromBytes(taskGuid, file.bytes!, file.name);
+                  debugPrint('Uploaded file (web): ${file.name}');
+                } else {
+                  debugPrint('File bytes are null for web upload: ${file.name}');
+                }
+              } else {
+                // For mobile, use path
+                if (file.path != null) {
+                  await _apiService.uploadFileToTask(taskGuid, file.path!);
+                  debugPrint('Uploaded file (mobile): ${file.name}');
+                } else {
+                  debugPrint('File path is null for mobile upload: ${file.name}');
+                }
+              }
+            } catch (e) {
+              debugPrint('Error uploading file ${file.name}: $e');
+              // Continue with other files even if one fails
+            }
+          }
+        }
+      }
+      
       // Call the callback
       widget.onTaskCreated(resultTask);
       
@@ -220,6 +388,7 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
       if (mounted) {
         setState(() {
           _isSaving = false;
+          _isUploadingFiles = false;
         });
         
         // Show error dialog
@@ -296,7 +465,22 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
               )
             : TextButton(
                 onPressed: _saveTask,
-                child: Text(widget.isEditMode ? 'UPDATE' : 'CREATE'),
+                child: _isSaving 
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(_isUploadingFiles 
+                          ? 'Uploading files...' 
+                          : 'Saving task...'),
+                      ],
+                    )
+                  : Text(widget.isEditMode ? 'UPDATE' : 'CREATE'),
               ),
         ],
       ),
@@ -371,41 +555,43 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text('Assignee'),
+                            const Text('Assignee(s)'),
                             const SizedBox(height: 8),
                             if (_errorMessage.isNotEmpty) 
                               Text(_errorMessage, style: const TextStyle(color: Colors.red, fontSize: 12)),
-                            DropdownButtonFormField<String>(
-                              value: _selectedAssignee,
-                              decoration: InputDecoration(
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              items: _projectEmployees.isEmpty
-                                  // Fallback to default list if no employees loaded
-                                  ? const [
-                                      DropdownMenuItem(value: 'oussama', child: Text('Oussama Tahmaz')),
-                                      DropdownMenuItem(value: 'nabih', child: Text('Nabih Darwich')),
-                                      DropdownMenuItem(value: 'hassan', child: Text('Hassan Bassam')),
-                                      DropdownMenuItem(value: 'hatoum', child: Text('Hassan Hatoum')),
-                                    ]
-                                  // Dynamic list of employees
-                                  : _projectEmployees.map((employee) {
+                            // Multi-select widget
+                            _projectEmployees.isEmpty
+                              ? const Text('No employees available')
+                              : MultiSelectDialogField<String>(
+                                  items: _projectEmployees.map((employee) {
                                       final employeeId = employee['id']?.toString() ?? 
                                                          employee['guid']?.toString() ?? 
                                                          employee['email']?.toString();
+                                    if (employeeId == null) return null;
                                       final employeeName = employee['fullName'] ?? 
                                                            employee['name'] ?? 
                                                            employee['userName'] ?? 
                                                            employee['email'] ?? 
                                                            'Unknown User';
-                                      return DropdownMenuItem(
-                                        value: employeeId,
-                                        child: Text(employeeName.toString()),
-                                      );
-                                    }).toList(),
-                              onChanged: (value) => setState(() => _selectedAssignee = value),
+                                    return MultiSelectItem<String>(employeeId, employeeName.toString());
+                                  }).whereType<MultiSelectItem<String>>().toList(),
+                                  initialValue: _selectedAssignees.whereType<String>().toList(),
+                                  title: const Text('Select Assignees'),
+                                  buttonText: const Text('Select Assignees'),
+                                  searchable: true,
+                                  listType: MultiSelectListType.LIST,
+                                  onConfirm: (values) {
+                                    setState(() {
+                                      _selectedAssignees = values.whereType<String>().toList();
+                                    });
+                                  },
+                                  chipDisplay: MultiSelectChipDisplay(
+                                    onTap: (value) {
+                                      setState(() {
+                                        _selectedAssignees.remove(value);
+                                      });
+                                    },
+                                  ),
                             ),
                           ],
                         ),
@@ -432,6 +618,93 @@ class _CreateTaskScreenState extends State<CreateTaskScreen> {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 16),
+                  
+                  // File attachment section
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        widget.isEditMode ? 'New Attachments' : 'Attachments',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      TextButton.icon(
+                        icon: const Icon(Icons.attach_file),
+                        label: const Text('Add Files'),
+                        onPressed: _pickFiles,
+                      ),
+                    ],
+                  ),
+                  
+                  // Show existing attachments in edit mode
+                  if (widget.isEditMode && _existingAttachments.isNotEmpty)
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Existing Attachments',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.grey.shade300),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Column(
+                            children: _existingAttachments.map((attachment) {
+                              final fileName = attachment['fileName'] ?? 'Unnamed file';
+                              final fileSize = attachment['fileSize'] as int?;
+                              
+                              return ListTile(
+                                leading: const Icon(Icons.insert_drive_file),
+                                title: Text(fileName),
+                                subtitle: fileSize != null 
+                                  ? Text(_formatFileSize(fileSize))
+                                  : null,
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.download),
+                                  onPressed: () => _downloadExistingAttachment(attachment),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+                    ),
+
+                  // Show selected files
+                  if (_selectedFiles.isNotEmpty)
+                    Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey.shade300),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        children: _selectedFiles.asMap().entries.map((entry) {
+                          final index = entry.key;
+                          final file = entry.value;
+                          
+                          return ListTile(
+                            leading: const Icon(Icons.insert_drive_file),
+                            title: Text(file.name),
+                            subtitle: Text(_formatFileSize(file.size)),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.remove_circle, color: Colors.red),
+                              onPressed: () => _removeFile(index),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  
                   const SizedBox(height: 24),
                   const Text('Description'),
                   const SizedBox(height: 8),

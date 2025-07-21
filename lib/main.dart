@@ -11,14 +11,37 @@ import 'screens/project_buckets_screen.dart';
 import 'services/auth_service.dart';
 import 'utils/navigation_service.dart';
 import 'splash_screen.dart';
+import 'services/firebase_service.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 
-void main() {
+void main() async {
   // Ensure plugins are initialized before the app starts
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
+  
+  // Set system UI overlay style
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.dark,
+    ),
+  );
+  
+  // Initialize Firebase and set background message handler
+  try {
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    
+    // Initialize Firebase service
+    final firebaseService = FirebaseService();
+    await firebaseService.initialize();
+    debugPrint('🔥 Firebase initialized successfully');
+  } catch (e) {
+    debugPrint('⚠️ Firebase initialization failed: $e');
+    // Continue app startup even if Firebase fails
+  }
   
   runApp(const MyApp());
 }

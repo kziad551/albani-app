@@ -8,6 +8,7 @@ import '../config/app_config.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
+import 'firebase_service.dart';
 
 class AuthService {
   // Singleton pattern
@@ -46,7 +47,7 @@ class AuthService {
   Map<String, dynamic>? get currentUser => _currentUser;
   
   // Login method
-  Future<bool> login(String username, String password) async {
+  Future<bool> login(String username, String password, {bool rememberMe = true}) async {
     try {
       debugPrint('\n=== Starting Login Process ===');
       debugPrint('Username: $username');
@@ -62,7 +63,7 @@ class AuthService {
       final requestBody = {
         'Username': username,
         'Password': password,
-        'RememberMe': true
+        'RememberMe': rememberMe
       };
 
       debugPrint('Request body: ${jsonEncode(requestBody)}');
@@ -127,6 +128,17 @@ class AuthService {
               
               _isAuthenticated = true;
               debugPrint('Login successful with domain URL');
+              
+              // Register FCM token with backend
+              try {
+                final firebaseService = FirebaseService();
+                await firebaseService.registerTokenWithBackend();
+                debugPrint('🔥 FCM token registered after login');
+              } catch (e) {
+                debugPrint('⚠️ FCM token registration failed: $e');
+                // Don't fail login if FCM registration fails
+              }
+              
               return true;
             }
           }
@@ -198,6 +210,17 @@ class AuthService {
               
               _isAuthenticated = true;
               debugPrint('Login successful with IP URL');
+              
+              // Register FCM token with backend
+              try {
+                final firebaseService = FirebaseService();
+                await firebaseService.registerTokenWithBackend();
+                debugPrint('🔥 FCM token registered after login (IP-based)');
+              } catch (e) {
+                debugPrint('⚠️ FCM token registration failed: $e');
+                // Don't fail login if FCM registration fails
+              }
+              
               return true;
             }
           }
@@ -393,46 +416,37 @@ class AuthService {
   // Logout method
   Future<void> logout() async {
     try {
-      final token = await getToken();
-      if (token == null) {
-        debugPrint('No token available for logout');
-      } else {
-        debugPrint('Logging out with token');
+      debugPrint('🚪 Logging out user...');
         
-        // Call the same endpoint as the website with the same headers
-        try {
-          // From the network tab, we can see the correct logout endpoint and headers
-          final response = await http.post(
-            Uri.parse('$_baseUrl/api/Employees/logout'),
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json, text/plain, */*',
-              'Authorization': 'Bearer $token',
-              'Origin': 'https://albani.smartsoft-me.com',
-              'Referer': 'https://albani.smartsoft-me.com/',
-              'Host': 'albani.smartsoft-me.com',
-              'Connection': 'keep-alive'
-            },
-          ).timeout(Duration(seconds: AppConfig.connectionTimeout));
-          
-          debugPrint('Logout response: ${response.statusCode}');
+      // Unregister FCM token
+      try {
+        final firebaseService = FirebaseService();
+        await firebaseService.unregisterToken();
+        debugPrint('🔥 FCM token unregistered on logout');
         } catch (e) {
-          debugPrint('Logout API call failed: $e');
-          // Continue with local logout even if API call fails
+        debugPrint('⚠️ FCM token cleanup failed: $e');
+        // Don't fail logout if FCM cleanup fails
         }
+      
+      // Preserve saved credentials if Remember Me was checked
+      final savedUsername = await storage.read(key: 'saved_username');
+      final savedPassword = await storage.read(key: 'saved_password');
+      await storage.deleteAll();
+      if (savedUsername != null && savedPassword != null) {
+        await storage.write(key: 'saved_username', value: savedUsername);
+        await storage.write(key: 'saved_password', value: savedPassword);
       }
-    } catch (e) {
-      debugPrint('Logout operation error: $e');
-    } finally {
-      // Always clear tokens and user data locally
-      debugPrint('Clearing local authentication data');
-      await storage.delete(key: 'accessToken');
-      await storage.delete(key: 'refreshToken');
-      await storage.delete(key: 'token');
+      
+      // Reset authentication state
       _isAuthenticated = false;
       _currentUser = null;
       
-      debugPrint('Logout complete');
+      debugPrint('✅ User logged out successfully');
+    } catch (e) {
+      debugPrint('❌ Error during logout: $e');
+      // Even if there's an error, clear local state
+      _isAuthenticated = false;
+      _currentUser = null;
     }
   }
   
