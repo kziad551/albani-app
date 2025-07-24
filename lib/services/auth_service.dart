@@ -131,11 +131,14 @@ class AuthService {
               
               // Register FCM token with backend
               try {
+                debugPrint('🔥🔥🔥 [AUTH] Initializing Firebase Service after login...');
                 final firebaseService = FirebaseService();
-                await firebaseService.registerTokenWithBackend();
-                debugPrint('🔥 FCM token registered after login');
+                await firebaseService.initialize();
+                debugPrint('🔥 [AUTH] Firebase Service initialized, registering FCM token...');
+                final registrationResult = await firebaseService.registerTokenWithBackend();
+                debugPrint('🔥 [AUTH] FCM token registration result: $registrationResult');
               } catch (e) {
-                debugPrint('⚠️ FCM token registration failed: $e');
+                debugPrint('⚠️⚠️⚠️ [AUTH] FCM token registration failed: $e');
                 // Don't fail login if FCM registration fails
               }
               
@@ -213,11 +216,14 @@ class AuthService {
               
               // Register FCM token with backend
               try {
+                debugPrint('🔥🔥🔥 [AUTH] Initializing Firebase Service after IP login...');
                 final firebaseService = FirebaseService();
-                await firebaseService.registerTokenWithBackend();
-                debugPrint('🔥 FCM token registered after login (IP-based)');
+                await firebaseService.initialize();
+                debugPrint('🔥 [AUTH] Firebase Service initialized, registering FCM token...');
+                final registrationResult = await firebaseService.registerTokenWithBackend();
+                debugPrint('🔥 [AUTH] FCM token registration result: $registrationResult');
               } catch (e) {
-                debugPrint('⚠️ FCM token registration failed: $e');
+                debugPrint('⚠️⚠️⚠️ [AUTH] FCM token registration failed: $e');
                 // Don't fail login if FCM registration fails
               }
               

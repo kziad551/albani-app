@@ -1723,7 +1723,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                                                                 await _downloadFile(attachment, bucketGuid);
                                                               } catch (e) {
                                                                 if (mounted) {
-                                                                  ScaffoldMessenger.of(context).showSnackBar(
+                                                  ScaffoldMessenger.of(context).showSnackBar(
                                                                     SnackBar(
                                                                       content: Text('Error downloading file: $e'),
                                                                       backgroundColor: Colors.red,
@@ -1771,7 +1771,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                                                                 const SnackBar(
                                                                   content: Text('File attached successfully'),
                                                                 ),
-                                                              );
+                                                  );
                                                             }
                                                           } catch (e) {
                                                             if (mounted) {
@@ -1779,7 +1779,7 @@ class _ProjectDetailsScreenState extends State<ProjectDetailsScreen> with Ticker
                                                                 SnackBar(
                                                                   content: Text('Error uploading file: $e'),
                                                                   backgroundColor: Colors.red,
-                                                                ),
+                                              ),
                                                               );
                                                             }
                                                           }

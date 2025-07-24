@@ -57,5 +57,15 @@
 	<string>Albani Engineer needs access to your microphone to record voice notes related to projects.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Albani Engineer needs your location to provide site-specific information for projects.</string>
+	
+	<!-- Push Notification Permissions -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
+	
+	<!-- Firebase Cloud Messaging -->
+	<key>FirebaseAppDelegateProxyEnabled</key>
+	<false/>
 </dict>
 </plist>

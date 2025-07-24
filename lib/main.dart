@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'screens/login_screen.dart';
@@ -13,6 +14,8 @@ import 'utils/navigation_service.dart';
 import 'splash_screen.dart';
 import 'services/firebase_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
 
 void main() async {
   // Ensure plugins are initialized before the app starts
@@ -30,17 +33,26 @@ void main() async {
     ),
   );
   
-  // Initialize Firebase and set background message handler
+  // Initialize Firebase Core - Platform specific approach
   try {
-    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    debugPrint('🚀🚀🚀 [MAIN] Initializing Firebase Core...');
     
-    // Initialize Firebase service
-    final firebaseService = FirebaseService();
-    await firebaseService.initialize();
-    debugPrint('🔥 Firebase initialized successfully');
+    // For iOS, Firebase is initialized natively in AppDelegate
+    // For Android and other platforms, initialize here
+    if (Platform.isIOS) {
+      debugPrint('🚀 [MAIN] iOS detected - using native Firebase initialization');
+    } else {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+      debugPrint('🚀🚀🚀 [MAIN] Firebase Core initialized for non-iOS platform');
+    }
+    
+    // Set background message handler
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    debugPrint('🚀 [MAIN] Background message handler set');
   } catch (e) {
-    debugPrint('⚠️ Firebase initialization failed: $e');
-    // Continue app startup even if Firebase fails
+    debugPrint('⚠️⚠️⚠️ [MAIN] Firebase initialization failed: $e');
   }
   
   runApp(const MyApp());

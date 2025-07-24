@@ -29,10 +29,10 @@ if (flutterRoot == null) {
 
 android {
     namespace "com.example.albani_app"
-    compileSdkVersion flutter.compileSdkVersion
-    // If compileSdkVersion is not set by the Flutter framework, set it to at least 33
-    if (flutter.compileSdkVersion < 33) {
-        compileSdkVersion 33
+    compileSdkVersion 35
+    // Set to Android 15 (API 35) for edge-to-edge support
+    if (flutter.compileSdkVersion < 35) {
+        compileSdkVersion 35
     }
     ndkVersion = flutter.ndkVersion
 
@@ -51,10 +51,16 @@ android {
         // You can update the following values to match your application needs.
         // For more information, see: https://docs.flutter.dev/deployment/android#reviewing-the-gradle-build-configuration.
         minSdkVersion flutter.minSdkVersion
-        targetSdkVersion flutter.targetSdkVersion
-        versionCode 3
-        versionName "1.0.1"
+        targetSdkVersion 35
+        versionCode 5
+        versionName "1.0.3"
         multiDexEnabled true
+        
+        // Support for 16KB page size devices (Android 15+)
+        ndk {
+            // Enable 16KB page size alignment
+            debugSymbolLevel 'SYMBOL_TABLE'
+        }
     }
 
     signingConfigs {
@@ -80,7 +86,12 @@ flutter {
 }
 
 dependencies {
-    implementation 'com.google.firebase:firebase-messaging:23.4.1'
+    implementation platform('com.google.firebase:firebase-bom:33.1.0')
+    implementation 'com.google.firebase:firebase-messaging'
+    
+    // AndroidX Core for edge-to-edge support
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.activity:activity-ktx:1.8.2'
 }
 
 // Apply Google Services plugin
